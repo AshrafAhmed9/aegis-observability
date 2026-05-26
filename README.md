@@ -10,6 +10,23 @@
 
 ---
 
+## ⚡ Quick Start
+
+```bash
+git clone https://github.com/AshrafAhmed9/aegis-observability.git
+cd aegis-observability\backend
+
+# Copy the env template and add your free Groq key (or skip — offline mode works without it)
+copy .env.example .env
+
+# Install dependencies and start the server
+.\run.bat
+```
+
+Open `http://127.0.0.1:8000/docs` — then hit `POST /ingest` with `{"log_filename": "redis_retry_storm.log"}`.
+
+---
+
 ## 🎬 Demo
 
 ![Aegis Demo](screenshots/gif.gif)
@@ -236,20 +253,28 @@ Acknowledging these is intentional. Aegis is an incident debugging workflow prot
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
 cd aegis-observability
 
-# Add your Groq API key
-echo "GROQ_API_KEY=your_key_here" > backend/.env
+# Create backend/.env and add your Groq API key (get one free at console.groq.com)
+# Windows: create the file in any text editor
+# Mac/Linux: echo "GROQ_API_KEY=your_key_here" > backend/.env
 
 # Start
 docker compose up
 ```
 
-### Option 2: Direct
+### Option 2: Direct (Windows)
 
 ```bash
-cd backend
-echo "GROQ_API_KEY=your_key_here" > .env
+# Clone the repo
+git clone https://github.com/AshrafAhmed9/aegis-observability.git
+cd aegis-observability\backend
+
+# Create a .env file in the backend/ folder with your Groq API key:
+# GROQ_API_KEY=your_key_here
+
 .\run.bat
 ```
+
+> **Note:** A Groq API key is free at [console.groq.com](https://console.groq.com). Without it, Aegis automatically falls back to pre-packaged offline diagnostics — no key required to run.
 
 Open `http://127.0.0.1:8000/docs` for the Swagger UI.
 

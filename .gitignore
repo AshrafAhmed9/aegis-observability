@@ -14,6 +14,10 @@ build/
 venv/
 .venv/
 
+# Auto-generated war room artifacts (regenerated on every /ingest)
+# Commit manually only when showcasing a specific scenario
+# active_war_room/
+
 # IDE
 .vscode/
 .idea/
