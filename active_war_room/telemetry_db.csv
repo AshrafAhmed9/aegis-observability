@@ -1,0 +1,5 @@
+timestamp,service,trace_id,span_id,severity,latency_ms,message
+2026-05-28T10:41:00.012Z,api-gateway,tr-98b1a,sp-001,INFO,45.2,Received checkout request
+2026-05-28T10:41:00.088Z,checkout-service,tr-98b1a,sp-002,INFO,,"Processing checkout items, executing transaction"
+2026-05-28T10:41:00.142Z,postgres-db,tr-98b1a,sp-003,INFO,,
+2026-05-28T10:41:00.222Z,checkout-service,tr-98b1a,sp-004,INFO,,Enqueuing payment task to Celery
