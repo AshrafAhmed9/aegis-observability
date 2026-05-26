@@ -25,3 +25,14 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Jetro workspace files (IDE extension state — not part of the project)
+.agents/
+.cursor/
+.jetro/
+.mcp.json
+CLAUDE.md
+AGENT.md
+.windsurfrules
+.github/
+*.md.bak
