@@ -10,6 +10,12 @@
 
 ---
 
+## 🎬 Demo
+
+![Aegis Demo](screenshots/gif.gif)
+
+---
+
 ## 📸 Screenshots
 
 ### Jetro Incident War Room
