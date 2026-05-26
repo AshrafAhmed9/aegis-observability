@@ -1,6 +1,6 @@
 # Aegis — AI-Native Incident Correlation & Observability Platform
 
-> **Deterministic telemetry correlation engine + Groq LLaMA 3.3 70B live RCA — built for SRE-grade distributed systems debugging.**
+> **Deterministic telemetry correlation engine + Groq LLaMA 3.3 70B live RCA — built for distributed systems incident debugging.**
 
 [![Python](https://img.shields.io/badge/Python-3.8+-3776ab?style=flat&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -127,6 +127,7 @@ msg="Celery thread pool starvation. Worker thread limits reached. Crash loop ini
 - Resolves `parent_span_id` relationships to construct directed call graphs
 - Ranks services by maximum observed severity
 - Calculates blast radius from degraded service count and request rate
+- Correlates 48+ telemetry events across 5 microservices into a unified dependency graph in under 2 seconds locally
 
 ### Groq AI RCA Engine
 - Receives pre-correlated graph (NOT raw logs) as structured input
@@ -182,6 +183,21 @@ Pydantic v2 is a first-class FastAPI citizen. Since the entire diagnostic pipeli
 
 ---
 
+## 🌐 Why Jetro?
+
+Incident debugging is inherently collaborative and spatial. Engineers rarely work through a single log file in isolation — they need timelines, dependency graphs, raw telemetry, and remediation patches simultaneously visible in the same workspace.
+
+Jetro enables this by treating every generated artifact as a first-class canvas element:
+
+- **Timelines and graphs coexist visually** — no tab-switching between Kibana, Grafana, and Slack
+- **AI-generated hypotheses sit beside raw telemetry** — engineers can validate AI reasoning against ground truth instantly
+- **War room is persistent** — the canvas survives page reloads and can be shared across the team
+- **SQL queries run inline** — `telemetry_db.csv` is queryable directly on the canvas without leaving the workspace
+
+This is the core workflow thesis: incident investigation should feel like a spatial reasoning exercise, not a terminal archaeology dig.
+
+---
+
 ## 🔭 Future Work
 
 - **OpenTelemetry ingestion** — accept OTLP spans directly from instrumented services
@@ -190,6 +206,18 @@ Pydantic v2 is a first-class FastAPI citizen. Since the entire diagnostic pipeli
 - **Vector similarity search** — match new incidents against historical postmortem embeddings
 - **Live log streaming** — WebSocket endpoint for real-time war room updates during active incidents
 - **Slack/PagerDuty export** — push incident summaries to on-call channels automatically
+
+---
+
+## ⚠️ Known Limitations
+
+- **Synthetic telemetry only** — sample logs are pre-authored scenarios, not ingested from live instrumented services
+- **Single-trace correlation** — the engine correlates one primary trace ID per ingest; incidents spanning multiple traces are not yet linked
+- **Local CSV storage** — telemetry is not persisted to a time-series database; `active_war_room/` is overwritten on every ingest
+- **No real-time streaming** — ingest is request-triggered, not event-driven from a log stream
+- **No persistent state** — the server is stateless; incident history is not retained between runs
+
+Acknowledging these is intentional. Aegis is an incident debugging workflow prototype, not a production observability platform replacement.
 
 ---
 
