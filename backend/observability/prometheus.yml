@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "aegis-api"
+    static_configs:
+      - targets: ["host.docker.internal:8001"]
+
+  - job_name: "aegis-consumer"
+    static_configs:
+      - targets: ["host.docker.internal:9090"]

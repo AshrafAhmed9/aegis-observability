@@ -1,20 +1,27 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import os
+import time
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .parser import parse_log_line
 from .correlation import CorrelationEngine
 from .analyzer import AegisAnalyzer
 from .jetro_service import JetroService
+from .streaming import StreamingCorrelator, IncidentAssembler
+from .metrics import (
+    EVENTS_INGESTED, TRACES_EMITTED, INCIDENTS_PROCESSED,
+    LATE_EVENTS, OPEN_TRACES, CORRELATION_DURATION, ROOT_CAUSE_CLASS,
+)
 
-# Get absolute workspace root path of Aegis
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 app = FastAPI(
     title="Aegis AI-Native Incident Correlation & Observability Platform",
-    version="1.0.0",
-    description="Deterministic telemetry correlation engine and structured SRE diagnostic whiteboard generator."
+    version="2.0.0",
+    description="Deterministic telemetry correlation engine with streaming windowed correlation and topological RCA."
 )
 
 class IngestRequest(BaseModel):
@@ -25,64 +32,90 @@ def read_root():
     return {
         "status": "ONLINE",
         "platform": "Aegis",
+        "version": "2.0.0",
         "description": "AI-Native Incident Correlation & Observability Platform"
     }
 
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 @app.post("/ingest")
 def ingest_log_file(request: IngestRequest):
-    """
-    Ingests raw distributed log telemetry, correlates events, maps propagation graphs,
-    and publishes the 'Incident War Room' spatial cockpit to the Jetro workspace.
-    """
     sample_logs_dir = os.path.join(WORKSPACE_ROOT, "backend", "sample_logs")
     log_path = os.path.join(sample_logs_dir, request.log_filename)
-    
+
     if not os.path.exists(log_path):
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"Log file '{request.log_filename}' not found in sample directory: {sample_logs_dir}"
         )
-        
+
     try:
-        # 1. Parse raw log lines
         with open(log_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-            
+
         parsed_events = []
         for line in lines:
             parsed = parse_log_line(line)
             if parsed:
                 parsed_events.append(parsed)
-                
+
         if not parsed_events:
             raise HTTPException(status_code=400, detail="No valid structured telemetry events parsed from log file.")
-            
-        # 2. Correlate events deterministically via Telemetry Correlation Engine
-        correlated_traces = CorrelationEngine.correlate(parsed_events)
-        if not correlated_traces:
+
+        start = time.monotonic()
+
+        correlator = StreamingCorrelator(wall_idle=float("inf"), grace=120.0)
+        for event in parsed_events:
+            correlator.ingest(event)
+        emitted_traces = correlator.flush_all()
+
+        if not emitted_traces:
             raise HTTPException(status_code=400, detail="No valid trace IDs found in log events.")
-        # Pull the primary incident trace (usually the longest or containing errors)
-        # For our pre-packaged logs, they correspond to a single correlated trace.
-        primary_trace_id = list(correlated_traces.keys())[0]
-        trace_events = correlated_traces[primary_trace_id]
-        
-        # 3. Model Failure Propagation Graph
-        nodes, edges = CorrelationEngine.build_propagation_graph(trace_events)
-        
-        # 4. Estimate Blast Radius Metrics
-        blast_radius = CorrelationEngine.estimate_blast_radius(trace_events, nodes)
-        
-        # 5. Run Pydantic AI Diagnostic Augmentor
-        report = AegisAnalyzer.analyze(request.log_filename, trace_events, blast_radius)
-        
-        # 6. Publish / Export SRE War Room whiteboard assets to Jetro Workspace
+
+        assembler = IncidentAssembler()
+        for trace in emitted_traces:
+            assembler.add(trace)
+        incident_events = assembler.flush()
+
+        if not incident_events:
+            raise HTTPException(status_code=400, detail="No incident assembled from traces.")
+
+        nodes, edges = CorrelationEngine.build_propagation_graph(incident_events)
+        blast_radius = CorrelationEngine.estimate_blast_radius(incident_events, nodes)
+        rca_result = CorrelationEngine.classify_root_cause(nodes, edges)
+
+        report = AegisAnalyzer.analyze(request.log_filename, incident_events, blast_radius, rca_result)
+
         jetro = JetroService(WORKSPACE_ROOT)
-        jetro.export_all(report, trace_events, nodes, edges)
-        
+        jetro.export_all(report, incident_events, nodes, edges)
+
+        duration = time.monotonic() - start
+        EVENTS_INGESTED.inc(len(parsed_events))
+        TRACES_EMITTED.inc(len(emitted_traces))
+        INCIDENTS_PROCESSED.inc()
+        LATE_EVENTS.inc(correlator.late_count)
+        CORRELATION_DURATION.observe(duration)
+        if rca_result["ranked_root_causes"]:
+            ROOT_CAUSE_CLASS.labels(
+                root_cause_class=rca_result["ranked_root_causes"][0]["root_cause_class"]
+            ).inc()
+
         return {
             "status": "SUCCESS",
-            "message": f"Successfully ingested {len(lines)} telemetry rows.",
-            "trace_id": primary_trace_id,
+            "message": f"Successfully ingested {len(lines)} telemetry rows across {len(emitted_traces)} traces.",
+            "correlation": {
+                "traces_correlated": len(emitted_traces),
+                "incident_events": len(incident_events),
+                "late_events": correlator.late_count,
+            },
+            "root_cause_analysis": {
+                "ranked_root_causes": rca_result["ranked_root_causes"],
+                "roles": rca_result["roles"],
+                "cycle": rca_result["cycle"],
+                "edge_basis": rca_result["edge_basis"],
+            },
             "incident_report": {
                 "incident_id": report.incident_id,
                 "title": report.title,
@@ -102,6 +135,8 @@ def ingest_log_file(request: IngestRequest):
                 "active_war_room/suggested_patch.diff"
             ]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         raise HTTPException(
@@ -111,9 +146,6 @@ def ingest_log_file(request: IngestRequest):
 
 @app.get("/scenarios")
 def list_scenarios():
-    """
-    Lists the available high-fidelity failure scenarios for rapid demo testing.
-    """
     return {
         "scenarios": [
             {
