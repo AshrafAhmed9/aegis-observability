@@ -1,173 +1,241 @@
 # Aegis — AI-Native Incident Correlation & Observability Platform
 
-> **Deterministic telemetry correlation engine + Groq LLaMA 3.3 70B live RCA — built for distributed systems incident debugging.**
+> **Streaming telemetry correlation engine with event-time watermarks, topological root-cause analysis (Kahn's), and Groq LLaMA 3.3 70B AI augmentation — built for distributed systems incident debugging.**
 
 [![Python](https://img.shields.io/badge/Python-3.8+-3776ab?style=flat&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Pydantic](https://img.shields.io/badge/Pydantic-v2-e92063?style=flat)](https://docs.pydantic.dev)
-[![Groq](https://img.shields.io/badge/Groq-LLaMA_3.3_70B-f55036?style=flat)](https://groq.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Kafka](https://img.shields.io/badge/Kafka-KRaft-231f20?style=flat&logo=apachekafka&logoColor=white)](https://kafka.apache.org)
+[![Prometheus](https://img.shields.io/badge/Prometheus-Instrumented-e6522c?style=flat&logo=prometheus&logoColor=white)](https://prometheus.io)
+[![Grafana](https://img.shields.io/badge/Grafana-Dashboard-f46800?style=flat&logo=grafana&logoColor=white)](https://grafana.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
-## ⚡ Quick Start
+## What Changed in v2
+
+v1 was a batch prototype — it read a file, analyzed the first trace, and relied on canned LLM fallbacks to look correct. **The deterministic engine was actually analyzing a healthy trace on a critical incident.** v2 fixes the architecture:
+
+| Capability | v1 | v2 |
+|---|---|---|
+| Correlation | Batch group-by, single trace (`traces[0]`) | **Streaming windowed correlation with event-time watermarks** |
+| Root cause | None (LLM guessed) | **Kahn's topological sort on reversed call graph** |
+| Ingestion | File read | **HTTP events + Kafka consumer group** |
+| LLM output | Unvalidated `raw["key"]` | **Schema-validated with deterministic fallback** |
+| Eval | None | **3/3 scorecard against engine ground truth** |
+| Observability | None | **Prometheus metrics + Grafana** |
+| Scaling | N/A | **Kafka partitioned by trace_id, KEDA scaling design** |
+
+---
+
+## Quick Start
+
+### Option 1: API Only (fastest)
 
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
-cd aegis-observability\backend
+cd aegis-observability
+git checkout v2-streaming
+cd backend
 
-# Copy the env template and add your free Groq key (or skip — offline mode works without it)
-copy .env.example .env
-
-# Install dependencies and start the server
-.\run.bat
+copy .env.example .env   # Add your free Groq key (or skip — deterministic fallback works without it)
+pip install -r requirements.txt
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Open `http://127.0.0.1:8000/docs` — then hit `POST /ingest` with `{"log_filename": "redis_retry_storm.log"}`.
+Test:
+```bash
+curl -X POST http://127.0.0.1:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"log_filename": "redis_retry_storm.log"}'
+```
+
+### Option 2: Full Stack (Kafka + Prometheus + Grafana)
+
+```bash
+git clone https://github.com/AshrafAhmed9/aegis-observability.git
+cd aegis-observability
+git checkout v2-streaming
+
+# Start infrastructure
+docker-compose up kafka prometheus grafana
+
+# Terminal 2: Start consumer
+cd backend
+pip install -r requirements.txt
+python -m app.consumer
+
+# Terminal 3: Replay events through Kafka
+cd backend
+python producers/replay_producer.py --scenario redis_retry_storm.log --sink kafka --rate 5
+```
+
+- **API docs**: http://127.0.0.1:8000/docs
+- **Prometheus metrics**: http://127.0.0.1:8000/metrics
+- **Grafana**: http://localhost:3000 (admin / aegis)
 
 ---
 
-## 🎬 Demo
-
-![Aegis Demo](screenshots/gif.gif)
-
----
-
-## 📸 Screenshots
-
-### Jetro Incident War Room
-![Jetro War Room](screenshots/jetro_warroom.png)
-
-### Failure Propagation Graph
-![Failure Propagation Graph](screenshots/jetro_graph.png)
-
-### API — `/scenarios` Endpoint
-![Swagger Scenarios](screenshots/swagger_scenarios.png)
-
-### API — `/ingest` Endpoint (Live AI RCA)
-![Swagger Ingest](screenshots/swagger_ingest.png)
-
----
-
-## 🧠 Problem Statement
-
-Modern distributed systems fail in complex, cascading ways. A single Redis pool exhaustion event can silently propagate through Celery workers, trigger exponential retry storms, exhaust thread pools, and ultimately crash customer-facing checkout endpoints — all within seconds.
-
-Traditional observability approaches force engineers to:
-- Manually correlate thousands of unstructured log lines
-- Context-switch between Grafana, Kibana, PagerDuty, and Slack
-- Reconstruct failure chains mentally under incident pressure
-- Write postmortems from memory hours after resolution
-
-**Aegis solves this by treating incident correlation as a deterministic graph problem first, and an AI interpretation problem second.**
-
----
-
-## 🏗️ System Architecture & Telemetry Pipeline
+## Architecture
 
 ```text
-       +---------------------------------------------+
-       |           Raw Unstructured Logs             |
-       +---------------------------------------------+
-                              │
-                              ▼
-       +---------------------------------------------+
-       |          Structured Parsing Layer           |
-       |  (Regex Key-Value & Trace Token Extraction)  |
-       +---------------------------------------------+
-                              │
-                              ▼
-       +---------------------------------------------+
-       |      Telemetry Correlation Engine           |
-       |  (Deterministic trace/span grouping)        |
-       +---------------------------------------------+
-                              │
-                              ▼
-       +---------------------------------------------+
-       |       Dependency Graph Construction         |
-       |  (Failure Propagation & Blast Radius Calc)  |
-       +---------------------------------------------+
-                              │
-                              ▼  [Operational Trust Boundary]
-       + - - - - - - - - - - - - - - - - - - - - - - +
-       :       Groq LLaMA 3.3 70B AI RCA Layer       :
-       :  (Pydantic Structured Diagnostic Synthesis) :
-       + - - - - - - - - - - - - - - - - - - - - - - +
-                              │
-                              ▼
-       +---------------------------------------------+
-       |        Jetro Spatial Whiteboard Cockpit     |
-       |  (Markdown RCA, Flowcharts, CSV, Diffs)     |
-       +---------------------------------------------+
+  Replay Producer / HTTP API
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │          Kafka (KRaft, single broker)        │
+  │     topic: telemetry.raw                     │
+  │     key: trace_id (partition-local state)    │
+  └─────────────────────────────────────────────┘
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │     Consumer Group: aegis-correlators        │
+  │                                              │
+  │  ┌───────────────────────────────────────┐   │
+  │  │  Streaming Windowed Correlator        │   │
+  │  │  • Event-time watermark + grace       │   │
+  │  │  • Per-trace_id buffering             │   │
+  │  │  • Idle gap / max window close        │   │
+  │  │  • Late event detection (side-output) │   │
+  │  │  • LRU eviction at memory cap         │   │
+  │  └───────────────────────────────────────┘   │
+  │           │                                  │
+  │           ▼                                  │
+  │  ┌───────────────────────────────────────┐   │
+  │  │  Incident Assembler                   │   │
+  │  │  • Tumbling event-time window         │   │
+  │  │  • Flattens traces → service graph    │   │
+  │  └───────────────────────────────────────┘   │
+  │           │                                  │
+  │           ▼                                  │
+  │  ┌───────────────────────────────────────┐   │
+  │  │  Propagation Graph Builder            │   │
+  │  │  • Nodes: services (severity, errors) │   │
+  │  │  • Edges: span parentage or temporal  │   │
+  │  └───────────────────────────────────────┘   │
+  │           │                                  │
+  │           ▼                                  │
+  │  ┌───────────────────────────────────────┐   │
+  │  │  Topological RCA (Kahn's Algorithm)   │   │
+  │  │  • Reverse call graph                 │   │
+  │  │  • ROOT_CAUSE / SYMPTOM / CYCLE       │   │
+  │  │  • Deadlock detection via err_class   │   │
+  │  │  • Deterministic scoring              │   │
+  │  └───────────────────────────────────────┘   │
+  │           │                                  │
+  │           ▼  [Operational Trust Boundary]    │
+  │  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐   │
+  │  │  Groq LLaMA 3.3 70B AI Layer         │   │
+  │  │  • Schema-validated (model_validate)  │   │
+  │  │  • Deterministic RCA-based fallback   │   │
+  │  │  • Ground truth fed into prompt       │   │
+  │  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘   │
+  │           │                                  │
+  │           ▼                                  │
+  │  ┌───────────────────────────────────────┐   │
+  │  │  War Room Export (6 artifacts)        │   │
+  │  │  + Prometheus Metrics                 │   │
+  │  └───────────────────────────────────────┘   │
+  └─────────────────────────────────────────────┘
+           │
+           ▼
+  ┌─────────────────────────────────────────────┐
+  │  Prometheus → Grafana Dashboard              │
+  │  Metrics: ingest rate, late events,          │
+  │  open traces, correlation latency,           │
+  │  root cause class, consumer lag              │
+  └─────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔒 Operational Trust Boundary
+## Operational Trust Boundary
 
-This is the core architectural principle of Aegis.
-
-Most "AI observability" tools pass raw logs directly to an LLM and ask it to explain what went wrong. This approach is **fundamentally unreliable** because:
-
-- LLMs hallucinate causal relationships that don't exist in the data
-- Raw logs lack the structural context needed for accurate reasoning
-- There is no ground truth to validate the AI's conclusions against
-
-**Aegis enforces a strict separation:**
+The core architectural principle: **the deterministic engine is ground truth; the LLM only interprets.**
 
 | Layer | Responsibility | Trust Level |
-| :--- | :--- | :--- |
-| Deterministic Engine | Trace correlation, span grouping, graph construction, blast radius | **Ground truth** |
-| AI Augmentation Layer | Hypothesis ranking, natural language synthesis, patch generation | **Interpretive only** |
+|---|---|---|
+| Streaming Correlator | Event-time windowing, trace grouping, incident assembly | **Ground truth** |
+| Topological RCA | Root-vs-symptom classification via Kahn's algorithm | **Ground truth** |
+| AI Layer | Hypothesis synthesis, natural language, patch generation | **Interpretive only** |
 
-The AI never sees raw logs. It receives a structured, pre-correlated graph — the mathematical output of the deterministic engine. This means every AI hypothesis is grounded in verified telemetry data, not pattern-matched guesswork.
+The LLM receives the deterministic RCA result as context in its prompt. If it returns invalid JSON, the system falls back to a report built entirely from the engine's output — no hard LLM dependency.
 
----
+**Eval scorecard (deterministic engine vs ground truth):**
 
-## 🛠️ Technical Specifications
-
-### Ingestion & Parsing
-Aegis parses structured logs carrying rich distributed trace metadata:
-
-| Field | Description |
-| :--- | :--- |
-| `trace_id` | Hexadecimal transaction tracker — links all events in a request chain |
-| `span_id` / `parent_span_id` | Parent-child call graph relationships |
-| `service_name` | Executing microservice identifier |
-| `latency_ms` | Database and cache operation duration |
-| `connection_pool_usage` | Active connection utilization percentage |
-| `queue_depth` | Task backlog depth for queue pressure modeling |
-
-Example log line:
-```text
-2026-05-28T11:42:13Z service=celery-worker trace_id=tr-98b24 span_id=sp-017
-queue_depth=842 retry_count=9 connection_pool_usage=100% severity=CRITICAL
-msg="Celery thread pool starvation. Worker thread limits reached. Crash loop initiated."
-```
-
-### Telemetry Correlation Engine
-- Groups events by shared `trace_id` into transaction chains
-- Resolves `parent_span_id` relationships to construct directed call graphs
-- Ranks services by maximum observed severity
-- Calculates blast radius from degraded service count and request rate
-- Correlates 48+ telemetry events across 5 microservices into a unified dependency graph in under 2 seconds locally
-
-### Groq AI RCA Engine
-- Receives pre-correlated graph (NOT raw logs) as structured input
-- Returns `AegisDiagnosticReport` — a Pydantic v2 validated schema
-- Produces ranked hypotheses with confidence scores (0.0–1.0)
-- Synthesizes unified git diff patches targeting specific source files
-- Generates SRE-grade postmortem with prevention action items
-- Graceful fallback to pre-packaged offline diagnostics on API failure
+| Metric | Score |
+|---|---|
+| Root cause top-1 match | 3/3 |
+| Root cause class match | 3/3 |
+| Schema validity | 3/3 |
+| Degraded services match | 3/3 |
 
 ---
 
-## 💻 War Room Artifacts
+## The Three Technical Pillars
 
-Every `/ingest` call overwrites `active_war_room/` with 6 fresh artifacts:
+### 1. Streaming Windowed Correlation (Dataflow Model)
+
+Events arrive one at a time, possibly out of order. The `StreamingCorrelator` buffers per `trace_id` and uses an **event-time watermark** with a configurable grace period to tolerate late arrivals.
+
+A trace closes when:
+- **Idle gap**: no new event for N seconds of event-time (watermark advanced past it)
+- **Max window**: event-time span exceeds cap (prevents memory leaks)
+- **LRU eviction**: memory cap exceeded (oldest trace force-closed)
+
+Late events (arriving after their trace closed) are counted as a quality metric, not silently dropped.
+
+The `IncidentAssembler` then groups closed traces into a tumbling event-time window, because **causality crosses trace boundaries** — in the Redis scenario, the incident spans 11 separate trace IDs with no span links between the failing services.
+
+### 2. Topological Root-vs-Symptom (Kahn's Algorithm)
+
+Call edges run `caller → callee`. Failure propagates the **opposite direction**: callee fails → caller times out. The algorithm:
+
+1. **Reverse the call graph** (edges become `callee → caller`)
+2. **Run Kahn's topological sort** (deterministic via sorted seeding)
+3. **Classify**: a degraded node with no degraded dependency = `ROOT_CAUSE`; downstream = `SYMPTOM`
+4. **Cycle/deadlock detection**: Kahn residual = `CYCLE_MEMBER`; `err_class` containing "deadlock" = forced root
+
+When no span links exist between failing services (the Redis scenario), the system falls back to **earliest-ERROR-in-event-time** ordering with lowered confidence — honestly signaled as `edge_basis: "EVENT_TIME"`.
+
+### 3. Kafka Pipeline (Partition-Local Correlation)
+
+Events are keyed by `trace_id` — every event of a trace lands on the same partition, so each consumer in the group correlates locally with **zero cross-instance coordination**. Adding consumers just reassigns partitions.
+
+The `StreamingCorrelator` was designed as a lock-free, single-threaded state machine specifically so it runs unchanged inside the Kafka consumer's poll loop — no async leaks, no thread bridges.
+
+---
+
+## Prometheus Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `aegis_events_ingested_total` | Counter | Total events ingested |
+| `aegis_traces_emitted_total` | Counter | Traces closed and emitted |
+| `aegis_incidents_processed_total` | Counter | Incidents fully processed |
+| `aegis_late_events_total` | Counter | Events arriving after trace closed |
+| `aegis_open_traces` | Gauge | Currently buffered traces |
+| `aegis_correlation_duration_seconds` | Histogram | Full pipeline processing time |
+| `aegis_root_cause_class_total` | Counter | Root causes by class (labels) |
+
+---
+
+## Production Failure Scenarios
+
+| Scenario | Root Cause (Engine) | Classification | Edge Basis |
+|---|---|---|---|
+| Redis Pool Exhaustion + Retry Storm | `redis-cache` (resource_exhaustion) | ROOT → celery/gateway SYMPTOM | EVENT_TIME |
+| PostgreSQL Row Lock Deadlock | `postgres-db` (deadlock) | CYCLE_MEMBER → order/gateway SYMPTOM | SPAN |
+| Cache Stampede + DB Starvation | `postgres-db` (resource_exhaustion) | ROOT → product/gateway SYMPTOM | SPAN |
+
+---
+
+## War Room Artifacts
+
+Every `/ingest` call produces 6 artifacts in `active_war_room/`:
 
 | File | Format | Contents |
-| :--- | :--- | :--- |
+|---|---|---|
 | `incident_summary.md` | Markdown | RCA hypotheses, severity, blast radius |
 | `incident_timeline.md` | Markdown table | Chronological trace event timeline |
 | `incident_graph.md` | Mermaid flowchart | Color-coded failure propagation graph |
@@ -177,157 +245,98 @@ Every `/ingest` call overwrites `active_war_room/` with 6 fresh artifacts:
 
 ---
 
-## 🎯 Production Failure Scenarios
-
-| Scenario | Log File | Failure Chain |
-| :--- | :--- | :--- |
-| Redis Pool Exhaustion + Retry Storm | `redis_retry_storm.log` | Pool saturation → Celery timeouts → exponential retries → thread starvation → HTTP 504 |
-| PostgreSQL Row Lock Deadlock | `pg_deadlock.log` | Non-deterministic lock ordering → circular wait → transaction rollback → HTTP 500 |
-| Cache Stampede + DB Starvation | `cache_stampede.log` | Rate limiter bypass → cache miss flood → connection pool exhaustion → HTTP 503 |
-
----
-
-## ⚖️ Design Tradeoffs
+## Design Tradeoffs
 
 ### Why deterministic correlation before AI?
-LLMs are excellent at synthesis and natural language generation but unreliable as the primary source of truth for causal reasoning over telemetry data. By running deterministic correlation first, we guarantee that every AI output is anchored to verified graph data — eliminating hallucinated failure chains.
+LLMs hallucinate causal relationships. By running deterministic correlation and topological RCA first, every AI output is anchored to verified graph data — the LLM interprets a pre-validated structure, not raw logs.
 
-### Why trace IDs as the correlation primitive?
-Trace IDs are the standard distributed tracing primitive (W3C TraceContext spec, OpenTelemetry). They are propagated across service boundaries at the network level, making them the most reliable signal for grouping causally-related events — more reliable than timestamp proximity or service name matching.
+### Why event-time watermarks instead of wall-clock windowing?
+Wall-clock windowing makes results depend on replay speed, network lag, and machine load. Event-time windowing produces identical correlation results whether processing a live stream or replaying a 2026 log file — deterministic and reproducible.
 
-### Why local CSV over a distributed time-series database?
-For an incident debugging workflow, the bottleneck is human comprehension, not query performance. A local CSV queryable via DuckDB/SQL gives engineers immediate, familiar access to raw telemetry without infrastructure overhead. A Prometheus/ClickHouse backend would add operational complexity without improving the core debugging workflow.
+### Why Kahn's algorithm for root cause?
+Root cause detection in a service dependency graph is a topological ordering problem. Kahn's algorithm is O(V+E), deterministic (given sorted seeding), handles cycles (Kahn residual = deadlock detection), and produces an explainable result — no ML black box.
 
-### Why Mermaid over D3?
-Mermaid graphs are text-defined, version-controllable, and render natively in GitHub, Notion, and Jetro. A D3 graph would require a frontend runtime and custom rendering logic for no meaningful gain in this use case.
+### Why key Kafka messages by trace_id?
+Keying by `trace_id` ensures every event of a trace lands on the same partition. This means each consumer holds all state needed to correlate that trace locally — no cross-consumer coordination, no distributed state, no shuffle. Adding consumers just reassigns partitions.
 
-### Why FastAPI?
-Pydantic v2 is a first-class FastAPI citizen. Since the entire diagnostic pipeline is built around Pydantic schemas, FastAPI eliminates the impedance mismatch between the data model and the HTTP layer.
-
----
-
-## 🌐 Why Jetro?
-
-Incident debugging is inherently collaborative and spatial. Engineers rarely work through a single log file in isolation — they need timelines, dependency graphs, raw telemetry, and remediation patches simultaneously visible in the same workspace.
-
-Jetro enables this by treating every generated artifact as a first-class canvas element:
-
-- **Timelines and graphs coexist visually** — no tab-switching between Kibana, Grafana, and Slack
-- **AI-generated hypotheses sit beside raw telemetry** — engineers can validate AI reasoning against ground truth instantly
-- **War room is persistent** — the canvas survives page reloads and can be shared across the team
-- **SQL queries run inline** — `telemetry_db.csv` is queryable directly on the canvas without leaving the workspace
-
-This is the core workflow thesis: incident investigation should feel like a spatial reasoning exercise, not a terminal archaeology dig.
+### Why NOT Kubernetes (yet)?
+K8s + KEDA autoscaling on consumer lag is designed but not deployed. A load test showed zero sustained consumer lag under the current workload — single-consumer throughput suffices. Single-pod K8s with no scaling signal is infrastructure theater. The scaling design is documented in `backend/scaling-design.md`.
 
 ---
 
-## 🔭 Future Work
+## Scaling Design
 
-- **OpenTelemetry ingestion** — accept OTLP spans directly from instrumented services
-- **Multi-trace correlation** — correlate incidents spanning multiple trace IDs via shared resource identifiers
-- **Prometheus alert integration** — trigger ingest automatically from alertmanager webhooks
-- **Vector similarity search** — match new incidents against historical postmortem embeddings
-- **Live log streaming** — WebSocket endpoint for real-time war room updates during active incidents
-- **Slack/PagerDuty export** — push incident summaries to on-call channels automatically
+K8s + KEDA autoscaling is **gated on evidence**: deploy only when `kafka_consumergroup_lag` builds faster than one consumer drains under sustained load. If lag never builds, the honest answer is that single-consumer throughput suffices — and that judgment is itself defensible.
+
+See `backend/scaling-design.md` for the full design: KEDA ScaledObject config, partition strategy, gate conditions, and the load test results that determined the current decision.
 
 ---
 
-## ⚠️ Known Limitations
-
-- **Synthetic telemetry only** — sample logs are pre-authored scenarios, not ingested from live instrumented services
-- **Single-trace correlation** — the engine correlates one primary trace ID per ingest; incidents spanning multiple traces are not yet linked
-- **Local CSV storage** — telemetry is not persisted to a time-series database; `active_war_room/` is overwritten on every ingest
-- **No real-time streaming** — ingest is request-triggered, not event-driven from a log stream
-- **No persistent state** — the server is stateless; incident history is not retained between runs
-
-Acknowledging these is intentional. Aegis is an incident debugging workflow prototype, not a production observability platform replacement.
-
----
-
-## 🚀 Running Locally
-
-### Option 1: Docker (recommended)
-
-```bash
-# Clone the repo
-git clone https://github.com/AshrafAhmed9/aegis-observability.git
-cd aegis-observability
-
-# Create backend/.env and add your Groq API key (get one free at console.groq.com)
-# Windows: create the file in any text editor
-# Mac/Linux: echo "GROQ_API_KEY=your_key_here" > backend/.env
-
-# Start
-docker compose up
-```
-
-### Option 2: Direct (Windows)
-
-```bash
-# Clone the repo
-git clone https://github.com/AshrafAhmed9/aegis-observability.git
-cd aegis-observability\backend
-
-# Create a .env file in the backend/ folder with your Groq API key:
-# GROQ_API_KEY=your_key_here
-
-.\run.bat
-```
-
-> **Note:** A Groq API key is free at [console.groq.com](https://console.groq.com). Without it, Aegis automatically falls back to pre-packaged offline diagnostics — no key required to run.
-
-Open `http://127.0.0.1:8000/docs` for the Swagger UI.
-
-### Test the pipeline
-
-```bash
-# List scenarios
-curl http://127.0.0.1:8000/scenarios
-
-# Ingest and generate AI RCA
-curl -X POST http://127.0.0.1:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"log_filename": "redis_retry_storm.log"}'
-```
-
-> A free Groq API key is available at [console.groq.com](https://console.groq.com). Without it, Aegis falls back to pre-packaged offline diagnostics automatically.
-
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 aegis-observability/
-├── app/
-│   ├── main.py              # FastAPI endpoints (/ingest, /scenarios)
-│   ├── parser.py            # Structured KV trace log parser
-│   ├── correlation.py       # Deterministic trace correlation & graph builder
-│   ├── analyzer.py          # Groq AI RCA engine with Pydantic v2 schemas
-│   └── jetro_service.py     # War room artifact exporter
-├── sample_logs/
-│   ├── redis_retry_storm.log
-│   ├── pg_deadlock.log
-│   └── cache_stampede.log
-├── active_war_room/         # Auto-generated on every /ingest call
-├── screenshots/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI endpoints (/ingest, /scenarios, /metrics)
+│   │   ├── parser.py            # Structured KV trace log parser
+│   │   ├── correlation.py       # Propagation graph + topological RCA (Kahn's)
+│   │   ├── streaming.py         # StreamingCorrelator + IncidentAssembler
+│   │   ├── analyzer.py          # Groq AI RCA with schema validation + deterministic fallback
+│   │   ├── consumer.py          # Kafka consumer group (aiokafka)
+│   │   ├── metrics.py           # Prometheus metric definitions
+│   │   └── jetro_service.py     # War room artifact exporter
+│   ├── producers/
+│   │   └── replay_producer.py   # HTTP + Kafka replay with jitter/late injection
+│   ├── eval/
+│   │   ├── ground_truth.json    # Expected root causes per scenario
+│   │   ├── run_eval.py          # Eval harness (3/3 scorecard)
+│   │   └── scorecard.md         # Latest eval results
+│   ├── observability/
+│   │   └── prometheus.yml       # Prometheus scrape config
+│   ├── tests/
+│   │   ├── test_streaming.py    # 16 tests: correlator, assembler, helpers
+│   │   └── test_rca.py          # 5 tests: topological RCA, deadlock, determinism
+│   ├── sample_logs/
+│   │   ├── redis_retry_storm.log
+│   │   ├── pg_deadlock.log
+│   │   └── cache_stampede.log
+│   ├── scaling-design.md        # K8s/KEDA scaling design (gated)
+│   └── requirements.txt
+├── docker-compose.yml           # Kafka (KRaft) + Prometheus + Grafana
 ├── Dockerfile
-├── docker-compose.yml
-├── implementation_plan.md
 └── README.md
 ```
 
 ---
 
-## 🎤 Interview Reference
+## Running Tests
 
-**Q: Why not just pass logs to GPT?**
-Raw logs lack causal structure. LLMs pattern-match on log text and frequently hallucinate failure chains. The deterministic engine establishes mathematical ground truth first — the AI only interprets the pre-verified graph.
+```bash
+cd backend
+pip install pytest
+python -m pytest tests/ -v          # 21 tests
+python eval/run_eval.py             # 3/3 scorecard
+```
 
-**Q: What is a trace ID and why does it matter?**
-A trace ID is a unique token injected at the request entry point and propagated across every downstream service call. It is the only reliable primitive for grouping causally-related events across a distributed system.
+---
 
-**Q: What is blast radius?**
-A quantitative estimate of how many user-facing requests were degraded by the incident, calculated from the number of affected service nodes, their position in the dependency graph, and observed request rates.
+## Interview Reference
 
-**Q: Why confidence-weighted hypotheses instead of a single root cause?**
-In distributed systems, incidents rarely have exactly one cause. A thundering herd is simultaneously a pool exhaustion problem AND a retry misconfiguration. Confidence weighting reflects the probabilistic nature of incident causality and prevents premature diagnostic closure.
+**Q: Why not just pass logs to an LLM?**
+Raw logs lack causal structure. The deterministic engine establishes ground truth first — trace correlation, service-level propagation graph, topological root-cause ordering. The LLM receives this structured result and only interprets it. If the LLM fails or returns invalid output, the system falls back to a report built entirely from deterministic analysis.
+
+**Q: How does the streaming correlator handle out-of-order events?**
+Event-time watermark with a configurable grace period. The watermark tracks `max_event_time_seen - grace`. Any trace whose latest event is behind the watermark by more than the idle gap is closed. Late events (arriving after closure) are counted but not silently dropped — they're a quality metric. This is the same model as Google Dataflow/Apache Beam.
+
+**Q: How do you determine root cause vs symptom?**
+Reverse the call graph (failure flows callee → caller, opposite to calls) and run Kahn's topological sort. A degraded node with no degraded dependency beneath it is the root cause; everything downstream is a symptom. Cycles (Kahn residual) or deadlock markers in `err_class` are detected as their own root-cause class.
+
+**Q: Why partition Kafka by trace_id?**
+Every event of a trace lands on the same partition, so each consumer holds all state needed for that trace's correlation — zero cross-consumer coordination. Scaling is just partition reassignment. No distributed state, no shuffle.
+
+**Q: When would you add Kubernetes?**
+Only when a load test shows `kafka_consumergroup_lag` building faster than one consumer drains. I'd use KEDA to autoscale consumers on that lag metric. Without evidence of real lag, K8s is single-pod theater — and saying that is itself a defensible engineering judgment.
+
+**Q: What's the eval harness?**
+`run_eval.py` runs all three scenarios through the full pipeline (correlator → assembler → graph → RCA) and scores the engine's top-1 root cause against curated ground truth. Current score: 3/3 root cause match, 3/3 class match, 3/3 schema validity. This proves the "no hard LLM dependency" claim — the engine is correct with the LLM turned off.
