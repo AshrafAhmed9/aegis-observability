@@ -305,6 +305,7 @@ See `backend/scaling-design.md` for the full design: KEDA ScaledObject config, p
 aegis-observability/
 ├── backend/
 │   ├── app/
+│   │   ├── __init__.py
 │   │   ├── main.py              # FastAPI endpoints (/ingest, /scenarios, /metrics)
 │   │   ├── parser.py            # Structured KV trace log parser
 │   │   ├── correlation.py       # Propagation graph + topological RCA (Kahn's)
@@ -322,16 +323,28 @@ aegis-observability/
 │   ├── observability/
 │   │   └── prometheus.yml       # Prometheus scrape config
 │   ├── tests/
+│   │   ├── __init__.py
 │   │   ├── test_streaming.py    # 16 tests: correlator, assembler, helpers
-│   │   └── test_rca.py          # 5 tests: topological RCA, deadlock, determinism
+│   │   ├── test_rca.py          # 5 tests: topological RCA, deadlock, determinism
+│   │   └── locustfile.py        # Locust load test (20 users, 47 req/s)
 │   ├── sample_logs/
 │   │   ├── redis_retry_storm.log
 │   │   ├── pg_deadlock.log
 │   │   └── cache_stampede.log
-│   ├── scaling-design.md        # K8s/KEDA scaling design (gated)
-│   └── requirements.txt
+│   ├── .env.example             # GROQ_API_KEY template
+│   ├── .gitignore
+│   ├── requirements.txt
+│   ├── run.bat                  # Windows quick-start launcher
+│   └── scaling-design.md        # K8s/KEDA scaling design (gated)
+├── screenshots/
+│   ├── gif.gif                  # Demo GIF
+│   ├── jetro_graph.png          # Failure propagation graph
+│   ├── jetro_warroom.png        # War room screenshot
+│   ├── swagger_ingest.png       # /ingest endpoint
+│   └── swagger_scenarios.png    # /scenarios endpoint
 ├── docker-compose.yml           # Kafka (KRaft) + Prometheus + Grafana
 ├── Dockerfile
+├── .gitignore
 └── README.md
 ```
 
