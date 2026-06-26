@@ -245,6 +245,33 @@ Every `/ingest` call produces 6 artifacts in `active_war_room/`:
 
 ---
 
+## Performance (Locust Load Test)
+
+Deterministic pipeline only (LLM disabled — measures the engine you'd defend in an interview):
+
+| Metric | Value |
+|---|---|
+| Concurrent users | 20 |
+| Duration | 60 seconds |
+| Total requests | 3,642 |
+| `/ingest` requests | 2,793 |
+| Error rate | **0%** |
+| Throughput | **47 req/s** sustained |
+| `/ingest` p50 latency | **10 ms** |
+| `/ingest` p95 latency | **28 ms** |
+| `/ingest` p99 latency | **45 ms** |
+| `/ingest` max latency | 171 ms |
+| `GET /` p50 | 3 ms |
+| `GET /scenarios` p50 | 3 ms |
+
+Each `/ingest` request runs the full pipeline: parse 17 log lines → stream-correlate 11 traces → assemble incident → build propagation graph → topological RCA (Kahn's) → export 6 war room artifacts.
+
+With the Groq LLM enabled, `/ingest` p50 rises to ~20s (dominated by the external API call). The deterministic engine completes in <50ms — the AI layer is interpretive garnish, not a latency dependency.
+
+> Measured with Locust 2.x, 20 concurrent users, 60s run, on a local machine. See `backend/tests/locustfile.py`.
+
+---
+
 ## Design Tradeoffs
 
 ### Why deterministic correlation before AI?
