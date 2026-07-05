@@ -1,3 +1,4 @@
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ class TraceBuffer:
     seen_keys: set = field(default_factory=set)
     min_ts: float = float("inf")
     max_ts: float = float("-inf")
+    last_wall: float = 0.0
 
 
 @dataclass
@@ -92,6 +94,7 @@ class StreamingCorrelator:
 
         buf.events.append(event)
         buf.seen_keys.add(key)
+        buf.last_wall = time.monotonic()
         if et is not None:
             buf.min_ts = min(buf.min_ts, et)
             buf.max_ts = max(buf.max_ts, et)
@@ -105,7 +108,22 @@ class StreamingCorrelator:
         return closed
 
     def tick(self) -> List[EmittedTrace]:
-        return self._collect_closures()
+        closed = self._collect_closures()
+        closed.extend(self._collect_wall_idle_closures())
+        return closed
+
+    def _collect_wall_idle_closures(self) -> List[EmittedTrace]:
+        # Wall-clock fallback: event-time watermarks stall once a stream
+        # stops emitting, so idle buffers would otherwise stay open forever.
+        if self.wall_idle is None or self.wall_idle == float("inf"):
+            return []
+        now = time.monotonic()
+        closed = []
+        for trace_id in list(self._buffers.keys()):
+            buf = self._buffers.get(trace_id)
+            if buf is not None and (now - buf.last_wall) >= self.wall_idle:
+                closed.append(self._seal(trace_id))
+        return closed
 
     def flush_all(self) -> List[EmittedTrace]:
         result = []

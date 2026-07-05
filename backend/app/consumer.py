@@ -10,17 +10,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.streaming import StreamingCorrelator, IncidentAssembler
 from app.correlation import CorrelationEngine
 from app.analyzer import AegisAnalyzer
-from app.jetro_service import JetroService
+from app.exporter import WarRoomExporter
+from app.predictor import FailurePredictor
 from app.metrics import (
     EVENTS_INGESTED, TRACES_EMITTED, INCIDENTS_PROCESSED,
     LATE_EVENTS, OPEN_TRACES, CORRELATION_DURATION, ROOT_CAUSE_CLASS,
+    PREDICTIONS_ACTIVE, PREDICTED_BREACH_ETA,
 )
 
 WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
 TOPIC = os.environ.get("KAFKA_TOPIC", "telemetry.raw")
 GROUP_ID = os.environ.get("KAFKA_GROUP", "aegis-correlators")
-METRICS_PORT = int(os.environ.get("METRICS_PORT", "9090"))
+METRICS_PORT = int(os.environ.get("METRICS_PORT", "9095"))
 TICK_INTERVAL = 2.0
 
 async def run_consumer():
@@ -36,6 +38,7 @@ async def run_consumer():
 
     correlator = StreamingCorrelator(grace=30.0)
     assembler = IncidentAssembler()
+    predictor = FailurePredictor()
 
     try:
         while True:
@@ -47,6 +50,7 @@ async def run_consumer():
                 for msg in messages:
                     event = msg.value
                     closed = correlator.ingest(event)
+                    predictor.observe(event)
                     all_closed.extend(closed)
                     event_count += 1
 
@@ -58,9 +62,15 @@ async def run_consumer():
             LATE_EVENTS.inc(correlator.late_count)
             OPEN_TRACES.set(correlator.open_trace_count)
 
+            active_preds = predictor.active()
+            PREDICTIONS_ACTIVE.set(len(active_preds))
+            for pred in active_preds:
+                if pred.eta_seconds is not None:
+                    PREDICTED_BREACH_ETA.labels(service=pred.service, metric=pred.metric).set(pred.eta_seconds)
+
             for trace in all_closed:
                 incident_events = assembler.add(trace)
-                if incident_events:
+                if incident_events and has_degraded_signal(incident_events):
                     process_incident(incident_events)
 
             if event_count > 0:
@@ -73,14 +83,17 @@ async def run_consumer():
         remaining_traces = correlator.flush_all()
         for trace in remaining_traces:
             incident_events = assembler.add(trace)
-            if incident_events:
+            if incident_events and has_degraded_signal(incident_events):
                 process_incident(incident_events)
         final = assembler.flush()
-        if final:
+        if final and has_degraded_signal(final):
             process_incident(final)
 
         await consumer.stop()
         print("Consumer stopped.")
+
+def has_degraded_signal(events):
+    return any(e.get("severity") in ("ERROR", "CRITICAL") for e in events)
 
 def process_incident(incident_events):
     start = time.monotonic()
@@ -90,8 +103,8 @@ def process_incident(incident_events):
     rca_result = CorrelationEngine.classify_root_cause(nodes, edges)
     report = AegisAnalyzer.analyze("kafka-stream", incident_events, blast_radius, rca_result)
 
-    jetro = JetroService(WORKSPACE_ROOT)
-    jetro.export_all(report, incident_events, nodes, edges)
+    exporter = WarRoomExporter(WORKSPACE_ROOT)
+    exporter.export_all(report, incident_events, nodes, edges)
 
     duration = time.monotonic() - start
     CORRELATION_DURATION.observe(duration)

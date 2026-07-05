@@ -15,3 +15,14 @@ ROOT_CAUSE_CLASS = Counter(
     "Root causes by class",
     ["root_cause_class"],
 )
+PREDICTIONS_ACTIVE = Gauge("aegis_predictions_active", "Currently active failure predictions")
+PREDICTED_BREACH_ETA = Gauge(
+    "aegis_predicted_breach_eta_seconds",
+    "Seconds until predicted metric threshold breach",
+    ["service", "metric"],
+)
+PREDICTIONS_EMITTED = Counter(
+    "aegis_predictions_emitted_total",
+    "Total predictions emitted by kind",
+    ["kind"],
+)

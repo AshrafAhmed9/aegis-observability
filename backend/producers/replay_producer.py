@@ -99,7 +99,7 @@ def main():
     parser.add_argument("--sink", choices=["http", "kafka"], default="http")
     parser.add_argument("--rate", type=float, default=10.0, help="Events per second")
     parser.add_argument("--jitter", action="store_true", help="Inject out-of-order events")
-    parser.add_argument("--url", default="http://127.0.0.1:8000/events", help="HTTP target URL")
+    parser.add_argument("--url", default="http://127.0.0.1:8010/events", help="HTTP target URL")
     parser.add_argument("--broker", default="localhost:9092", help="Kafka broker address")
     parser.add_argument("--topic", default="telemetry.raw", help="Kafka topic name")
     args = parser.parse_args()

@@ -7,17 +7,6 @@ class CorrelationEngine:
     sev_levels = {"INFO": 0, "WARNING": 1, "ERROR": 2, "CRITICAL": 3}
 
     @staticmethod
-    def correlate(events: List[Dict[str, Any]]) -> Dict[str, Any]:
-        traces = defaultdict(list)
-        for event in events:
-            trace_id = event.get("trace_id")
-            if trace_id:
-                traces[trace_id].append(event)
-        for trace_id in traces:
-            traces[trace_id].sort(key=lambda x: x.get("timestamp", ""))
-        return dict(traces)
-
-    @staticmethod
     def build_propagation_graph(trace_events: List[Dict[str, Any]]):
         nodes = {}
         for event in trace_events:

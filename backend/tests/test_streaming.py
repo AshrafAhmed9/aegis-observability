@@ -149,3 +149,37 @@ def test_assembler_empty_flush():
     """Flush on empty assembler returns None."""
     a = IncidentAssembler()
     assert a.flush() is None
+
+
+def test_wall_idle_closes_stalled_trace(monkeypatch):
+    import app.streaming as streaming_mod
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(streaming_mod.time, "monotonic", lambda: fake_now[0])
+
+    c = StreamingCorrelator(wall_idle=10.0)
+    c.ingest(_make_event("tr-stall", "sp-1", "2026-05-28T10:41:00.000Z"))
+
+    fake_now[0] = 1005.0
+    assert c.tick() == []
+    assert c.open_trace_count == 1
+
+    fake_now[0] = 1011.0
+    closed = c.tick()
+    assert len(closed) == 1
+    assert closed[0].trace_id == "tr-stall"
+    assert c.open_trace_count == 0
+
+
+def test_wall_idle_none_never_wall_closes(monkeypatch):
+    import app.streaming as streaming_mod
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(streaming_mod.time, "monotonic", lambda: fake_now[0])
+
+    c = StreamingCorrelator(wall_idle=None)
+    c.ingest(_make_event("tr-keep", "sp-1", "2026-05-28T10:41:00.000Z"))
+
+    fake_now[0] = 99999.0
+    assert c.tick() == []
+    assert c.open_trace_count == 1

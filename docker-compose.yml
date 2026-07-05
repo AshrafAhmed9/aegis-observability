@@ -34,12 +34,19 @@ services:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_PASSWORD: aegis
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./backend/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./backend/observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./backend/observability/grafana/dashboards:/var/lib/grafana/dashboards
     restart: unless-stopped
 
   aegis:
     build: .
     ports:
-      - "8000:8000"
+      - "8010:8000"
     env_file:
       - backend/.env
     volumes:

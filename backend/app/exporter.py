@@ -4,11 +4,12 @@ from datetime import datetime
 from typing import Dict, Any, List
 from .analyzer import AegisDiagnosticReport, CodeRemediation
 
-class JetroService:
+class WarRoomExporter:
     """
-    Jetro Workspace Exporter.
-    Generates file-backed spatial visual whiteboard components inside active_war_room/
-    for seamless rendering on Jetro's visual canvas in the Antigravity IDE.
+    War-room artifact exporter.
+
+    Writes incident artifacts (summary, timeline, graph, postmortem,
+    telemetry CSV, suggested patch) to active_war_room/ for review.
     """
     
     def __init__(self, workspace_path: str):

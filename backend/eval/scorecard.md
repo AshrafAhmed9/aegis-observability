@@ -25,3 +25,6 @@
 - Edge basis: SPAN
 - Traces/Events: 5/18
 
+## Prediction Lead Time
+- redis_connection_leak: 237s lead (PASS, threshold 60s)
+
