@@ -10,6 +10,8 @@ import DemoTimeline from './components/DemoTimeline.jsx'
 import PipelineMap from './components/PipelineMap.jsx'
 import GrafanaPanel from './components/GrafanaPanel.jsx'
 import ArtifactViewer from './components/ArtifactViewer.jsx'
+import ScoreboardStrip from './components/ScoreboardStrip.jsx'
+import ModelCard from './components/ModelCard.jsx'
 
 const TABS = ['Live Ops', 'Pipeline Map', 'Evidence']
 
@@ -54,6 +56,7 @@ export default function App() {
         <>
           <ChaosPanel simStatus={simStatus} onChange={setSimStatus} />
           <PredictionsPanel predictions={state.predictions} watermark={state.watermark} />
+          <ScoreboardStrip scoreboard={state.scoreboard} />
           <div className="app__row">
             <ServiceGrid services={state.services} />
             <div className="app__col">
@@ -78,6 +81,7 @@ export default function App() {
       {tab === 'Evidence' && (
         <>
           <GrafanaPanel infra={infra} />
+          <ModelCard />
           <ArtifactViewer />
         </>
       )}

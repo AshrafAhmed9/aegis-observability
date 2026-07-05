@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { usePrevious, kafkaReplay, simulatorStart, simulatorStop, simulatorInject } from '../api.js'
+import { usePrevious, kafkaReplay, simulatorStart, simulatorStop, simulatorInject, useIntervalFetch, mlInfo } from '../api.js'
 
 const FAULTS = [
   { id: 'redis_connection_leak', label: 'Redis connection leak' },
@@ -64,6 +64,10 @@ export default function PipelineMap({ state, simStatus, kafka, infra, onSimChang
   const replay = kafka?.replay || { state: 'idle' }
   const consumerOnline = Boolean(kafka?.consumer_online)
   const brokerUp = Boolean(infra?.kafka)
+
+  const ml = useIntervalFetch(mlInfo, 5000, true)
+  const mlAvailable = Boolean(ml?.ml_available)
+  const mlPredictionCount = (state?.predictions ?? []).filter((p) => p.kind === 'ML_RISK').length
 
   async function runSim(fn) {
     setBusy(true)
@@ -137,6 +141,17 @@ export default function PipelineMap({ state, simStatus, kafka, infra, onSimChang
               { label: 'predictions', value: fmt(state?.predictions?.length ?? 0) },
             ]}
           />
+          <Edge active={httpFlow} />
+          <StageNode
+            title="ML Layer"
+            subtitle={mlAvailable ? `failure v${ml.failure_model.champion} · ranker v${ml.rca_ranker.champion}` : 'not installed'}
+            status={mlAvailable ? 'ok' : 'off'}
+            hint="pip install -r requirements-ml.txt && python ml/generate_dataset.py && python ml/train_failure_model.py"
+            counters={mlAvailable ? [
+              { label: 'ml risk', value: fmt(mlPredictionCount) },
+              { label: 'drift', value: ml?.drift?.level ?? '—' },
+            ] : []}
+          />
           <Edge active={httpIncidentFlow} />
           <StageNode
             title="Topological RCA"
@@ -201,7 +216,7 @@ export default function PipelineMap({ state, simStatus, kafka, infra, onSimChang
           <Edge active={kafkaIncidentFlow} />
           <StageNode
             title="RCA + Predictor"
-            subtitle="same engine, own process"
+            subtitle="STAT + ML detectors, same engine"
             status={consumerOnline ? 'ok' : 'off'}
             hint="starts with the consumer"
             counters={consumerOnline ? [

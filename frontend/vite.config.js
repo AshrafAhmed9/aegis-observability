@@ -15,6 +15,8 @@ export default defineConfig({
       '/war-room': 'http://127.0.0.1:8010',
       '/eval': 'http://127.0.0.1:8010',
       '/scenarios': 'http://127.0.0.1:8010',
+      '/ml': 'http://127.0.0.1:8010',
+      '/incidents': 'http://127.0.0.1:8010',
     },
   },
   build: {

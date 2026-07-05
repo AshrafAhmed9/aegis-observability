@@ -1,0 +1,20 @@
+{
+  "gbm": {
+    "pr_auc": 0.9996701824912535,
+    "threshold": 2.6502518179634053e-05,
+    "precision_at_threshold": 0.9090909090909091,
+    "recall_at_threshold": 1.0,
+    "median_lead_seconds": 58.1,
+    "n_true_positives_caught": 240,
+    "n_positives_total": 240
+  },
+  "isolation_forest": {
+    "pr_auc": 0.9209864199205525,
+    "threshold": 0.6151950260003578,
+    "precision_at_threshold": 0.9017341040462428,
+    "recall_at_threshold": 0.65,
+    "median_lead_seconds": 36.1,
+    "n_true_positives_caught": 156,
+    "n_positives_total": 240
+  }
+}

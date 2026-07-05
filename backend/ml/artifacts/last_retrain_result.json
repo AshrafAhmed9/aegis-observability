@@ -1,0 +1,17 @@
+{
+  "seed_base": 648646,
+  "models": {
+    "failure_model": {
+      "challenger_version": 2,
+      "previous_champion": 1,
+      "promoted": true,
+      "reasons": []
+    },
+    "rca_ranker": {
+      "challenger_version": 2,
+      "previous_champion": 1,
+      "promoted": true,
+      "reasons": []
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "trained_at": "2026-07-05T11:39:19.861260+00:00",
+  "sklearn_version": "1.5.2",
+  "n_train_rows": 128,
+  "n_val_rows": 31,
+  "n_train_episodes": 63,
+  "n_val_episodes": 15
+}

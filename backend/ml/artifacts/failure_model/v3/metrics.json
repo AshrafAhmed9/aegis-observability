@@ -1,0 +1,47 @@
+{
+  "gbm": {
+    "pr_auc": 0.9999304090610386,
+    "threshold": 6.215776496515361e-07,
+    "precision_at_threshold": 0.9022556390977443,
+    "recall_at_threshold": 1.0,
+    "median_lead_seconds": 58.1,
+    "n_true_positives_caught": 240,
+    "n_positives_total": 240,
+    "calibration": {
+      "curve": [
+        {
+          "bin_lo": 0.0,
+          "bin_hi": 0.1,
+          "count": 3233,
+          "mean_predicted": 5.205469181996187e-07,
+          "actual_rate": 0.0
+        },
+        {
+          "bin_lo": 0.1,
+          "bin_hi": 0.2,
+          "count": 1,
+          "mean_predicted": 0.10701248477215104,
+          "actual_rate": 0.0
+        },
+        {
+          "bin_lo": 0.9,
+          "bin_hi": 1.0,
+          "count": 241,
+          "mean_predicted": 0.9997511901576811,
+          "actual_rate": 0.995850622406639
+        }
+      ],
+      "ece": 0.000301793450635923,
+      "brier_score": 0.00028890500412836876
+    }
+  },
+  "isolation_forest": {
+    "pr_auc": 0.9080558758768825,
+    "threshold": 0.6150774912753442,
+    "precision_at_threshold": 0.901840490797546,
+    "recall_at_threshold": 0.6125,
+    "median_lead_seconds": 35.1,
+    "n_true_positives_caught": 147,
+    "n_positives_total": 240
+  }
+}

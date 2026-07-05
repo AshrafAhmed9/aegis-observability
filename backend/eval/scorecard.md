@@ -28,3 +28,8 @@
 ## Prediction Lead Time
 - redis_connection_leak: 237s lead (PASS, threshold 60s)
 
+## STAT vs ML (unseen seeds, real runtime classes)
+- Fault: redis_connection_leak, episodes: 3
+- STAT: caught 3/3, median lead 228s
+- ML: caught 3/3, median lead 117s
+

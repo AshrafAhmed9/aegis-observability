@@ -10,8 +10,9 @@ from app.parser import parse_log_line
 from app.streaming import StreamingCorrelator, IncidentAssembler, parse_event_time
 from app.correlation import CorrelationEngine
 from app.analyzer import AegisAnalyzer, AegisDiagnosticReport
-from app.simulator import SimulatedFleet
+from app.simulator import SimulatedFleet, FAULTS
 from app.predictor import FailurePredictor, TREND_BREACH
+from app.ml_predictor import MLFailureDetector, ML_RISK
 import app.simulator as sim_mod
 
 EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -117,6 +118,91 @@ def evaluate_prediction(fault_name="redis_connection_leak", min_lead_seconds=MIN
     return {"fault": fault_name, "lead_seconds": lead, "passed": lead >= min_lead_seconds}
 
 
+def _run_fault_episode_events(fault_name, seed):
+    """Drive one full fault episode on a fake clock; returns sorted events
+    with _event_ts set. Same technique as evaluate_prediction()."""
+    original_datetime = sim_mod.datetime
+    fake_now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+
+    class FakeDateTime(original_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake_now[0]
+
+    sim_mod.datetime = FakeDateTime
+    try:
+        events = []
+        fleet = SimulatedFleet(emit=events.append, seed=seed)
+        fleet.inject(fault_name)
+        fault = fleet._fault
+
+        total_seconds = fault.ramp_seconds + fault.failure_seconds + 5.0
+        step = fleet.TICK_SECONDS
+        real_start = time_mod.monotonic()
+        t = 0.0
+        while t <= total_seconds:
+            fleet._fault_started_at = real_start - t
+            fleet.tick()
+            fake_now[0] += timedelta(seconds=step)
+            t += step
+    finally:
+        sim_mod.datetime = original_datetime
+
+    for event in events:
+        event["_event_ts"] = parse_event_time(event)
+    events.sort(key=lambda e: e["_event_ts"] or 0.0)
+    return events, fleet._fault if hasattr(fleet, "_fault") else None
+
+
+def evaluate_stat_vs_ml(fault_name="redis_connection_leak", seeds=(9001, 9002, 9003)):
+    """True apples-to-apples comparison: runs the ACTUAL FailurePredictor and
+    MLFailureDetector runtime classes (not reconstructed offline metrics)
+    side-by-side over identical, genuinely unseen-seed episodes (training
+    used seeds 1,8,...,169; these are far outside that set)."""
+    ml = MLFailureDetector.load()
+    if ml is None:
+        return {"fault": fault_name, "available": False}
+
+    target = FAULTS[fault_name].target_service
+    stat_leads, ml_leads = [], []
+    for seed in seeds:
+        events, _ = _run_fault_episode_events(fault_name, seed)
+
+        stat = FailurePredictor()
+        ml_run = MLFailureDetector.load()  # fresh internal buffers per episode
+        first_stat_ts, first_ml_ts, first_error_ts = None, None, None
+
+        for event in events:
+            for p in stat.observe(event):
+                if p.kind == TREND_BREACH and p.service == target and first_stat_ts is None:
+                    first_stat_ts = p.predicted_at
+            for p in ml_run.observe(event):
+                if p.kind == ML_RISK and p.service == target and first_ml_ts is None:
+                    first_ml_ts = p.predicted_at
+            if (event.get("service") == target and event.get("severity") in ("ERROR", "CRITICAL")
+                    and first_error_ts is None):
+                first_error_ts = event["_event_ts"]
+
+        if first_error_ts is not None:
+            if first_stat_ts is not None:
+                stat_leads.append(first_error_ts - first_stat_ts)
+            if first_ml_ts is not None:
+                ml_leads.append(first_error_ts - first_ml_ts)
+
+    def _median(values):
+        if not values:
+            return None
+        s = sorted(values)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    return {
+        "fault": fault_name, "available": True, "n_episodes": len(seeds),
+        "stat_median_lead": _median(stat_leads), "stat_catches": len(stat_leads),
+        "ml_median_lead": _median(ml_leads), "ml_catches": len(ml_leads),
+    }
+
+
 def evaluate():
     gt = load_ground_truth()
     results = []
@@ -180,6 +266,23 @@ def evaluate():
         print(f"  {pred_result['fault']}: no prediction fired before breach [FAIL]")
 
     print(f"\n{'='*60}")
+    print(f"STAT vs ML — apples-to-apples (unseen seeds, real runtime classes)")
+    print(f"{'='*60}")
+    cmp_result = evaluate_stat_vs_ml()
+    if not cmp_result["available"]:
+        print(f"  ML model not available (no artifact/deps) — skipped")
+    else:
+        print(f"  {cmp_result['fault']} over {cmp_result['n_episodes']} unseen-seed episodes:")
+        print(f"    STAT: caught {cmp_result['stat_catches']}/{cmp_result['n_episodes']}, "
+              f"median lead {cmp_result['stat_median_lead']:.0f}s"
+              if cmp_result["stat_median_lead"] is not None else
+              f"    STAT: caught {cmp_result['stat_catches']}/{cmp_result['n_episodes']}")
+        print(f"    ML:   caught {cmp_result['ml_catches']}/{cmp_result['n_episodes']}, "
+              f"median lead {cmp_result['ml_median_lead']:.0f}s"
+              if cmp_result["ml_median_lead"] is not None else
+              f"    ML:   caught {cmp_result['ml_catches']}/{cmp_result['n_episodes']}")
+
+    print(f"\n{'='*60}")
     print(f"SCORECARD")
     print(f"{'='*60}")
     print(f"  Root cause top-1 match:  {root_score}/{total}")
@@ -209,6 +312,18 @@ def evaluate():
                     f"({'PASS' if pred_result['passed'] else 'FAIL'}, threshold {MIN_LEAD_SECONDS:.0f}s)\n\n")
         else:
             f.write(f"- {pred_result['fault']}: no prediction fired (FAIL)\n\n")
+
+        f.write("## STAT vs ML (unseen seeds, real runtime classes)\n")
+        if not cmp_result["available"]:
+            f.write("- ML model not available (no artifact/deps)\n\n")
+        else:
+            f.write(f"- Fault: {cmp_result['fault']}, episodes: {cmp_result['n_episodes']}\n")
+            f.write(f"- STAT: caught {cmp_result['stat_catches']}/{cmp_result['n_episodes']}"
+                    + (f", median lead {cmp_result['stat_median_lead']:.0f}s\n"
+                       if cmp_result["stat_median_lead"] is not None else "\n"))
+            f.write(f"- ML: caught {cmp_result['ml_catches']}/{cmp_result['n_episodes']}"
+                    + (f", median lead {cmp_result['ml_median_lead']:.0f}s\n\n"
+                       if cmp_result["ml_median_lead"] is not None else "\n\n"))
     print(f"\nScorecard written to {scorecard_path}")
 
 

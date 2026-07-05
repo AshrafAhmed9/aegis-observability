@@ -1,0 +1,17 @@
+{
+  "failure_model": {
+    "champion": 3,
+    "versions": [
+      1,
+      2,
+      3
+    ]
+  },
+  "rca_ranker": {
+    "champion": 2,
+    "versions": [
+      1,
+      2
+    ]
+  }
+}

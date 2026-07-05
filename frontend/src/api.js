@@ -101,6 +101,36 @@ export function usePrevious(value) {
   return ref.current
 }
 
+export async function mlInfo() {
+  return fetch('/ml/info').then((r) => r.json())
+}
+
+export async function mlRetrainStart() {
+  const res = await fetch('/ml/retrain', { method: 'POST' })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`)
+  return body
+}
+
+export async function mlRetrainStatus() {
+  return fetch('/ml/retrain/status').then((r) => r.json())
+}
+
+export async function mlRollback(modelKey, version) {
+  const res = await fetch('/ml/rollback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_key: modelKey, version }),
+  })
+  const body = await res.json()
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`)
+  return body
+}
+
+export async function incidentsSimilar(text) {
+  return fetch(`/incidents/similar?text=${encodeURIComponent(text)}`).then((r) => r.json())
+}
+
 // Generic interval poller for the platform endpoints.
 export function useIntervalFetch(fn, intervalMs, active = true) {
   const [data, setData] = useState(null)

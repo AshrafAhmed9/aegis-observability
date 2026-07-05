@@ -40,3 +40,5 @@ AGENT.md
 *.md.bak
 frontend/node_modules
 frontend/dist
+# ML datasets (regenerable via ml/generate_dataset.py)
+backend/ml/data/

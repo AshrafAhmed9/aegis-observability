@@ -48,6 +48,9 @@ export default function PredictionsPanel({ predictions, watermark }) {
           return (
             <div key={i} className={`prediction-card ${severityClass(p.severity)}`}>
               <div className="prediction-card__head">
+                <span className={`prediction-card__source prediction-card__source--${p.kind === 'ML_RISK' ? 'ml' : 'stat'}`}>
+                  {p.kind === 'ML_RISK' ? 'ML' : 'STAT'}
+                </span>
                 <span className="prediction-card__kind">{p.kind.replace('_', ' ')}</span>
                 <span className="prediction-card__confidence">conf {Math.round(p.confidence * 100)}%</span>
               </div>

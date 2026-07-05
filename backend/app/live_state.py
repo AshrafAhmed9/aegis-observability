@@ -85,6 +85,8 @@ class LiveState:
             "root_cause_class": top_root["root_cause_class"] if top_root else None,
             "degraded_services": result.blast_radius["degraded_services"],
             "blast_radius_percentage": result.blast_radius["blast_radius_percentage"],
+            "ml_ranking": result.rca_result.get("ml_ranking"),
+            "similar_incidents": result.similar_incidents or [],
             "ts": ts,
         })
         self.last_graph = {

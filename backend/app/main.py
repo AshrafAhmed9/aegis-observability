@@ -1,14 +1,14 @@
 import asyncio
 import json
 import os
+import sys
 import time
 from contextlib import asynccontextmanager, suppress
-from .simulator import SimulatedFleet
-from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
@@ -17,9 +17,16 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .parser import parse_log_line
 from .streaming import StreamingCorrelator, IncidentAssembler
 from .predictor import FailurePredictor
+from .ml_predictor import MLFailureDetector
 from .live_state import LiveState
 from .pipeline import run_incident_pipeline
+from .simulator import SimulatedFleet
 from . import infra
+from . import incident_memory
+from . import rca_ranker
+from . import model_registry
+from .drift import DriftMonitor
+from .scoreboard import Scoreboard
 from .metrics import (
     EVENTS_INGESTED, TRACES_EMITTED, LATE_EVENTS, OPEN_TRACES,
     PREDICTIONS_ACTIVE, PREDICTED_BREACH_ETA,
@@ -34,12 +41,16 @@ correlator = StreamingCorrelator(wall_idle=10.0, grace=5.0)
 # failure under minutes of unrelated healthy traffic before it ever flushes.
 assembler = IncidentAssembler(window=20.0)
 predictor = FailurePredictor()
+drift_monitor = DriftMonitor()
+ml_detector = MLFailureDetector.load(drift_monitor=drift_monitor)  # None when ML deps/artifacts are absent
+scoreboard = Scoreboard()
 live_state = LiveState()
 
 
 def _update_prediction_gauges():
-    active = predictor.active()
+    active = predictor.active() + (ml_detector.active() if ml_detector else [])
     live_state.set_predictions(active)
+    scoreboard.observe_predictions(active, live_state.watermark or time.time())
     PREDICTIONS_ACTIVE.set(len(active))
     for pred in active:
         if pred.eta_seconds is not None:
@@ -49,11 +60,24 @@ def _update_prediction_gauges():
 def ingest_live_event(event: dict) -> dict:
     closed = correlator.ingest(event)
     predictor.observe(event)
+    if ml_detector:
+        ml_detector.observe(event)
+
+    service = event.get("service")
+    was_degraded = (service in live_state.services
+                    and live_state.services[service].status in ("ERROR", "CRITICAL"))
     live_state.record_event(event)
+    ts = event.get("_event_ts")
+    if service and ts is not None:
+        now_degraded = live_state.services[service].status in ("ERROR", "CRITICAL")
+        if now_degraded and not was_degraded:
+            scoreboard.observe_breach(service, ts)
+
     _update_prediction_gauges()
     _handle_closed_traces(closed)
+    active_count = len(predictor.active()) + (len(ml_detector.active()) if ml_detector else 0)
     return {"accepted": True, "open_traces": correlator.open_trace_count,
-            "active_predictions": len(predictor.active())}
+            "active_predictions": active_count}
 
 
 def _has_degraded_signal(events) -> bool:
@@ -80,6 +104,11 @@ KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "telemetry.raw")
 
 _replay_task = None
 _replay_status = {"state": "idle", "scenario": None, "sent": 0, "total": 0, "error": None}
+
+_retrain_task = None
+_retrain_status = {"state": "idle", "log": [], "result": None}
+RETRAIN_SCRIPT = os.path.join(WORKSPACE_ROOT, "backend", "ml", "retrain_pipeline.py")
+RETRAIN_RESULT_PATH = os.path.join(WORKSPACE_ROOT, "backend", "ml", "artifacts", "last_retrain_result.json")
 
 
 async def _run_kafka_replay(events, rate):
@@ -111,6 +140,31 @@ async def _run_kafka_replay(events, rate):
         await producer.stop()
 
 
+async def _run_retrain():
+    global _retrain_status, ml_detector
+    _retrain_status = {"state": "running", "log": [], "result": None}
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, RETRAIN_SCRIPT,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        cwd=os.path.join(WORKSPACE_ROOT, "backend"),
+    )
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        _retrain_status["log"].append(line.decode(errors="replace").rstrip())
+    await proc.wait()
+
+    if proc.returncode == 0 and os.path.exists(RETRAIN_RESULT_PATH):
+        with open(RETRAIN_RESULT_PATH) as f:
+            _retrain_status["result"] = json.load(f)
+        _retrain_status["state"] = "done"
+        ml_detector = MLFailureDetector.load(drift_monitor=drift_monitor)
+        rca_ranker.reload()
+    else:
+        _retrain_status["state"] = "error"
+
+
 async def _background_tick():
     while True:
         await asyncio.sleep(TICK_INTERVAL)
@@ -126,16 +180,17 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(_background_tick())
     yield
     task.cancel()
-    if _replay_task is not None and not _replay_task.done():
-        _replay_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _replay_task
+    for bg_task in (_replay_task, _retrain_task):
+        if bg_task is not None and not bg_task.done():
+            bg_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await bg_task
 
 
 app = FastAPI(
     title="Aegis AI-Native Incident Correlation & Observability Platform",
-    version="3.0.0",
-    description="Streaming correlation, topological RCA, and predictive failure detection.",
+    version="4.0.0",
+    description="Streaming correlation, topological RCA, predictive failure detection, and a self-training ML lifecycle.",
     lifespan=lifespan,
 )
 
@@ -165,12 +220,17 @@ class KafkaReplayRequest(BaseModel):
     rate: float = 5.0
 
 
+class RollbackRequest(BaseModel):
+    model_key: str
+    version: int
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ONLINE",
         "platform": "Aegis",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "description": "AI-Native Incident Correlation & Observability Platform",
     }
 
@@ -209,7 +269,9 @@ def flush_events():
 
 @app.get("/dashboard/state")
 def dashboard_state():
-    return live_state.snapshot()
+    state = live_state.snapshot()
+    state["scoreboard"] = scoreboard.snapshot()
+    return state
 
 
 @app.post("/simulator/start")
@@ -280,6 +342,42 @@ async def kafka_replay(request: KafkaReplayRequest):
     return dict(_replay_status)
 
 
+@app.post("/ml/retrain")
+async def ml_retrain():
+    global _retrain_task
+    if _retrain_task is not None and not _retrain_task.done():
+        raise HTTPException(status_code=409, detail="A retrain is already in progress.")
+    _retrain_task = asyncio.create_task(_run_retrain())
+    return {"state": "started"}
+
+
+@app.get("/ml/retrain/status")
+def ml_retrain_status():
+    return dict(_retrain_status)
+
+
+@app.get("/ml/info")
+def ml_info():
+    return {
+        "ml_available": ml_detector is not None,
+        "failure_model": model_registry.model_info("failure_model"),
+        "rca_ranker": model_registry.model_info("rca_ranker"),
+        "drift": drift_monitor.status(),
+        "last_retrain": model_registry.last_retrain_result(),
+    }
+
+
+@app.post("/ml/rollback")
+def ml_rollback(request: RollbackRequest):
+    global ml_detector
+    ok = model_registry.rollback(request.model_key, request.version)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Unknown model_key or version.")
+    ml_detector = MLFailureDetector.load(drift_monitor=drift_monitor)
+    rca_ranker.reload()
+    return model_registry.model_info(request.model_key)
+
+
 WAR_ROOM_FILES = (
     "incident_summary.md",
     "incident_timeline.md",
@@ -324,6 +422,14 @@ def eval_scorecard():
         return {"available": False, "content": None}
     with open(path, "r", encoding="utf-8") as f:
         return {"available": True, "content": f.read(WAR_ROOM_MAX_BYTES)}
+
+
+@app.get("/incidents/similar")
+def incidents_similar(text: str):
+    memory = incident_memory.get_memory()
+    if memory is None:
+        return {"available": False, "results": []}
+    return {"available": True, "encoder": memory.encoder_name, "results": memory.similar(text, top_k=3)}
 
 
 @app.post("/ingest")
@@ -436,7 +542,8 @@ def list_scenarios():
             }
         ]
     }
+
+
 _FRONTEND_DIST = os.path.join(WORKSPACE_ROOT, "frontend", "dist")
 if os.path.isdir(_FRONTEND_DIST):
     app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
-

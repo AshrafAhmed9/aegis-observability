@@ -4,6 +4,7 @@ const MILESTONES = [
   { id: 'fleet', label: 'Fleet started' },
   { id: 'fault', label: 'Fault injected' },
   { id: 'prediction', label: 'Prediction fired' },
+  { id: 'ml_risk', label: 'ML risk flagged' },
   { id: 'breach', label: 'Breach occurred' },
   { id: 'incident', label: 'Incident root-caused' },
   { id: 'postmortem', label: 'Postmortem generated' },
@@ -32,6 +33,9 @@ export default function DemoTimeline({ state, simStatus }) {
       }
       if (!next.prediction && next.fault && (state.predictions?.length ?? 0) > 0) {
         next.prediction = now
+      }
+      if (!next.ml_risk && next.fault && state.predictions?.some((p) => p.kind === 'ML_RISK')) {
+        next.ml_risk = now
       }
       if (!next.breach && next.fault && faultTarget.current) {
         const target = state.services?.find((s) => s.name === faultTarget.current)

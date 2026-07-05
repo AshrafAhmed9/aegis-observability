@@ -12,6 +12,7 @@ from app.correlation import CorrelationEngine
 from app.analyzer import AegisAnalyzer
 from app.exporter import WarRoomExporter
 from app.predictor import FailurePredictor
+from app.ml_predictor import MLFailureDetector
 from app.metrics import (
     EVENTS_INGESTED, TRACES_EMITTED, INCIDENTS_PROCESSED,
     LATE_EVENTS, OPEN_TRACES, CORRELATION_DURATION, ROOT_CAUSE_CLASS,
@@ -39,6 +40,7 @@ async def run_consumer():
     correlator = StreamingCorrelator(grace=30.0)
     assembler = IncidentAssembler()
     predictor = FailurePredictor()
+    ml_detector = MLFailureDetector.load()  # None when ML deps/artifacts are absent
 
     try:
         while True:
@@ -51,6 +53,8 @@ async def run_consumer():
                     event = msg.value
                     closed = correlator.ingest(event)
                     predictor.observe(event)
+                    if ml_detector:
+                        ml_detector.observe(event)
                     all_closed.extend(closed)
                     event_count += 1
 
@@ -62,7 +66,7 @@ async def run_consumer():
             LATE_EVENTS.inc(correlator.late_count)
             OPEN_TRACES.set(correlator.open_trace_count)
 
-            active_preds = predictor.active()
+            active_preds = predictor.active() + (ml_detector.active() if ml_detector else [])
             PREDICTIONS_ACTIVE.set(len(active_preds))
             for pred in active_preds:
                 if pred.eta_seconds is not None:
