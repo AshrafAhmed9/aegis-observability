@@ -42,3 +42,7 @@ frontend/node_modules
 frontend/dist
 # ML datasets (regenerable via ml/generate_dataset.py)
 backend/ml/data/
+
+# Interview prep files (keep private)
+INTERVIEW_PREP.md
+INTERVIEW_PREP.pdf
