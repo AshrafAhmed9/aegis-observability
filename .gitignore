@@ -36,7 +36,6 @@ Thumbs.db
 CLAUDE.md
 AGENT.md
 .windsurfrules
-.github/
 *.md.bak
 frontend/node_modules
 frontend/dist

@@ -1,4 +1,9 @@
-import numpy as np
+import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("sklearn")
+pytest.importorskip("pandas")
+
 from ml.train_failure_model import calibration_curve, expected_calibration_error, brier_score
 
 

@@ -10,6 +10,7 @@
 [![Prometheus](https://img.shields.io/badge/Prometheus-Instrumented-e6522c?style=flat&logo=prometheus&logoColor=white)](https://prometheus.io)
 [![Grafana](https://img.shields.io/badge/Grafana-Dashboard-f46800?style=flat&logo=grafana&logoColor=white)](https://grafana.com)
 [![Tests](https://img.shields.io/badge/Tests-69%20passing-brightgreen?style=flat)]()
+[![CI](https://github.com/AshrafAhmed9/aegis-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/AshrafAhmed9/aegis-observability/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -43,7 +44,6 @@ Aegis treats incident debugging as a **deterministic graph problem first, and an
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
 cd aegis-observability
-git checkout v2-streaming
 cd backend
 
 cp .env.example .env   # Add your Groq API key (optional — deterministic fallback works without it)
@@ -95,7 +95,7 @@ curl -X POST http://127.0.0.1:8010/ingest \
 
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
-cd aegis-observability && git checkout v2-streaming
+cd aegis-observability
 
 # Terminal 1: Infrastructure
 docker-compose up kafka prometheus grafana
