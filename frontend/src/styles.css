@@ -19,9 +19,31 @@ body {
 }
 
 .app {
-  max-width: 900px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 32px 20px 60px;
+}
+
+.layout-grid {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .layout-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sidebar, .main-column {
+  min-width: 0;
+}
+
+.main-column {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
 }
 
 h1 {
@@ -85,17 +107,27 @@ button:hover {
 .badge.warn { background: var(--warn); color: #000; }
 .badge.critical { background: var(--critical); }
 
+.prediction-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .prediction-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
-  font-size: 13px;
+  padding: 3px 0;
+  font-size: 12px;
   border-top: 1px solid var(--border);
 }
 
 .prediction-row:first-of-type {
   border-top: none;
+}
+
+.prediction-row span:first-child {
+  width: 60px;
+  flex-shrink: 0;
 }
 
 .empty {

@@ -6,11 +6,23 @@ Events can arrive out of order, so we track a "watermark": the newest event
 time seen so far, minus a grace period. The watermark only moves forward.
 Once it has passed a trace's last event by enough, we know that trace is
 done and seal it.
+
+The watermark only advances when a new event arrives, so an isolated trace
+with no further traffic behind it would never close on event-time alone.
+close_wall_idle_traces() covers that: it closes a trace once real (wall
+clock) time has passed since we last touched it, regardless of the
+synthetic event timestamps.
 """
+
+import time
 
 WATERMARK_GRACE_SECONDS = 10   # cushion before trusting the newest event time
 IDLE_GAP_SECONDS = 15          # close a trace once the watermark passes it by this much
-MAX_TRACE_SECONDS = 90         # safety net: close a trace after this long regardless
+# A full simulated episode (baseline, warning, retry backoff, cascade -- see
+# simulator.py) can span up to ~280s. This must stay comfortably above that,
+# or the safety net fires mid-episode and cuts off events still to come.
+MAX_TRACE_SECONDS = 320        # safety net: close a trace after this long regardless
+WALL_IDLE_SECONDS = 10         # close a trace after this many real seconds of silence
 
 
 class TraceBuffer:
@@ -19,6 +31,7 @@ class TraceBuffer:
         self.events = []
         self.first_event_time = None
         self.last_event_time = None
+        self.last_touched_wall = time.monotonic()
 
     def add(self, event):
         self.events.append(event)
@@ -27,6 +40,7 @@ class TraceBuffer:
             self.first_event_time = timestamp
         if self.last_event_time is None or timestamp > self.last_event_time:
             self.last_event_time = timestamp
+        self.last_touched_wall = time.monotonic()
 
 
 class Correlator:
@@ -76,3 +90,15 @@ class Correlator:
         """Force-closes every remaining open trace, e.g. at shutdown."""
         remaining_ids = list(self.open_traces.keys())
         return [self._seal(trace_id) for trace_id in remaining_ids]
+
+    def close_wall_idle_traces(self, wall_idle_seconds=WALL_IDLE_SECONDS):
+        """Closes any trace that hasn't received a new event in the last
+        wall_idle_seconds of real time -- the fallback for a trace with no
+        later traffic to advance the event-time watermark past it."""
+        sealed = []
+        now = time.monotonic()
+        for trace_id in list(self.open_traces.keys()):
+            buffer = self.open_traces[trace_id]
+            if now - buffer.last_touched_wall >= wall_idle_seconds:
+                sealed.append(self._seal(trace_id))
+        return sealed

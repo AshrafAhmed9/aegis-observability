@@ -95,9 +95,21 @@ def _score_shadow_predictions(events, rca_result):
         seen.append(event)
 
 
+async def close_idle_traces_forever():
+    # A trace with no further traffic behind it never gets an event-time
+    # nudge to close it (see correlator.py's docstring) -- this is the
+    # real-time fallback that finishes it off a few seconds after it goes
+    # quiet, instead of leaving it open forever.
+    while True:
+        await asyncio.sleep(2)
+        for sealed_trace in correlator.close_wall_idle_traces():
+            process_trace(sealed_trace)
+
+
 @app.on_event("startup")
-async def start_kafka_consumer():
+async def start_background_tasks():
     asyncio.create_task(kafka_io.consume_forever(handle_event))
+    asyncio.create_task(close_idle_traces_forever())
 
 
 @app.get("/health")

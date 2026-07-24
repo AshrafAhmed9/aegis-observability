@@ -57,9 +57,15 @@ export default function App() {
 
       {statusMessage && <p className="status-line">{statusMessage}</p>}
 
-      <MlStatusCard mlInfo={mlInfo} />
-      <PredictionsPanel predictions={predictions} />
-      <IncidentList incidents={incidents} />
+      <div className="layout-grid">
+        <div className="sidebar">
+          <MlStatusCard mlInfo={mlInfo} />
+          <PredictionsPanel predictions={predictions} />
+        </div>
+        <div className="main-column">
+          <IncidentList incidents={incidents} />
+        </div>
+      </div>
     </div>
   )
 }
@@ -73,15 +79,17 @@ function PredictionsPanel({ predictions }) {
         Scored alongside every event, before the deterministic engine decides root cause.
         Never overrides it -- shown here just to see what the model would have called.
       </p>
-      {predictions.map((prediction, index) => (
-        <div key={index} className="prediction-row">
-          <span>{prediction.service}</span>
-          <span className="badge">{prediction.severity}</span>
-          <span className={`badge ${prediction.high_risk ? 'critical' : 'ok'}`}>
-            risk {prediction.risk.toFixed(2)}
-          </span>
-        </div>
-      ))}
+      <div className="prediction-list">
+        {predictions.map((prediction, index) => (
+          <div key={index} className="prediction-row">
+            <span>{prediction.service}</span>
+            <span className="badge">{prediction.severity}</span>
+            <span className={`badge ${prediction.high_risk ? 'critical' : 'ok'}`}>
+              risk {prediction.risk.toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
