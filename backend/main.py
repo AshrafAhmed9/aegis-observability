@@ -45,6 +45,7 @@ correlator = Correlator()
 detector = ml.FailureDetector.load(ARTIFACTS_DIR / "model.joblib", ARTIFACTS_DIR / "feature_distribution.json")
 incidents = []  # most-recently-processed incident reports, newest first
 predictions = []  # most-recent ML shadow-mode risk scores, newest first
+MAX_INCIDENTS_KEPT = 50
 MAX_PREDICTIONS_KEPT = 50
 
 # simulator.py builds each episode on its own clock starting near 0, which is
@@ -75,6 +76,7 @@ def process_trace(events):
     report = warroom.build_report(rca_result)
     warroom.write_artifacts(report, rca_result, events, WAR_ROOM_DIR)
     incidents.insert(0, report)
+    del incidents[MAX_INCIDENTS_KEPT:]
     INCIDENTS_PROCESSED.inc()
 
 
@@ -83,6 +85,14 @@ def _score_shadow_predictions(events, rca_result):
     # deterministic RCA result above is what actually drives the report.
     seen = []
     for event in events:
+        # "api" only ever appears as a downstream cascade symptom, never as
+        # its own trained example (see ml.TRAINED_SERVICES) -- scoring it
+        # would be an untrained guess, and feeding it into the drift monitor
+        # would compare it against a distribution that never included it.
+        if event["service"] not in ml.TRAINED_SERVICES:
+            seen.append(event)
+            continue
+
         features = ml.extract_features(seen, event, seen)
         risk = float(detector.predict_risk(features))
         predictions.insert(0, {

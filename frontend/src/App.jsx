@@ -117,8 +117,11 @@ function IncidentList({ incidents }) {
   }
   return (
     <div>
-      {incidents.map((incident) => (
-        <div className="card" key={incident.incident_id}>
+      {incidents.map((incident, index) => (
+        // incident_id is derived only from the root-cause service name, so
+        // it repeats across separate incidents (e.g. two INC-CACHE entries)
+        // -- index is what's actually unique in this always-freshly-fetched list.
+        <div className="card" key={index}>
           <h3>
             {incident.incident_id}: {incident.title}
             <span className="badge critical">{incident.root_cause_class}</span>

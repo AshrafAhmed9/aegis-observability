@@ -14,6 +14,12 @@ import joblib
 
 FEATURE_NAMES = ["warning_count", "error_count", "seconds_since_last_event", "degraded_services_count"]
 
+# The model is only ever trained on these three services (see
+# build_training_rows) -- "api" only appears as a downstream cascade
+# symptom, never as its own labeled example, so a prediction on "api" would
+# be an untrained extrapolation, not a meaningful score.
+TRAINED_SERVICES = {"cache", "queue", "database"}
+
 # A prediction only counts if we're at least this confident.
 RISK_THRESHOLD = 0.5
 
@@ -54,7 +60,7 @@ def build_training_rows(episode):
     """
     events = sorted(episode["events"], key=lambda e: e["timestamp"])
     target_service = episode["root_cause_service"]
-    non_failing_services = {s for s in ("cache", "queue", "database") if s != target_service}
+    non_failing_services = TRAINED_SERVICES - {target_service}
 
     rows = []
     seen = []
@@ -101,6 +107,7 @@ class DriftMonitor:
     was trained on."""
 
     EXPECTED_BUCKET_SHARE = [0.10, 0.40, 0.40, 0.10]
+    WINDOW_SIZE = 200  # compare against recent traffic, not everything ever seen
 
     def __init__(self, training_distribution):
         self.training_distribution = training_distribution
@@ -108,7 +115,9 @@ class DriftMonitor:
 
     def observe(self, features):
         for name, value in zip(FEATURE_NAMES, features):
-            self.observed_values[name].append(value)
+            values = self.observed_values[name]
+            values.append(value)
+            del values[:-self.WINDOW_SIZE]
 
     def status(self):
         psi_per_feature = {name: self._psi_for(name) for name in FEATURE_NAMES}

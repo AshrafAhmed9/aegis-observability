@@ -4,9 +4,12 @@ else in the project needs to know Kafka is involved.
 """
 
 import json
+import logging
 import os
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+
+logger = logging.getLogger(__name__)
 
 TOPIC = "telemetry.raw"
 BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
@@ -34,6 +37,11 @@ async def consume_forever(on_event, topic=TOPIC, broker=BROKER, group_id="aegis-
     await consumer.start()
     try:
         async for message in consumer:
-            on_event(message.value)
+            try:
+                on_event(message.value)
+            except Exception:
+                # One bad message shouldn't take down the whole consumer --
+                # log it and keep processing the rest of the stream.
+                logger.exception("Failed to process a message; skipping it")
     finally:
         await consumer.stop()

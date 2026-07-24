@@ -90,10 +90,13 @@ def main():
 
     lead_result = evaluate_lead_time()
     if lead_result is None:
-        print("No trained model found -- run `python -m ml.train` first.")
+        print("No trained model found -- run `python train.py` first.")
     else:
         median_lead, caught, total_val = lead_result
-        print(f"Median early-warning lead time: {median_lead:.1f}s ({caught}/{total_val} caught)")
+        if median_lead is None:
+            print(f"Median early-warning lead time: n/a (0/{total_val} caught)")
+        else:
+            print(f"Median early-warning lead time: {median_lead:.1f}s ({caught}/{total_val} caught)")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """
 Synthetic telemetry generator for a small service fleet (api, cache, queue,
 database). Produces fault episodes with a known root cause, used both for
-live demo traffic and for grading the correlation engine (see eval/run_eval.py).
+live demo traffic and for grading the correlation engine (see run_eval.py).
 
 Timestamps are plain seconds counting up from 0, not wall-clock time -- enough
 to exercise event-time watermarks without real delays.
@@ -36,7 +36,7 @@ FAULT_TYPES = {
 # reconnection-storm: a handful of retries at growing intervals. The total
 # backoff time (plus some jitter) is the gap ml.py's model has to predict
 # across -- whatever lead time that produces gets measured honestly by
-# eval/run_eval.py, not targeted in advance.
+# run_eval.py, not targeted in advance.
 RETRY_BACKOFF_STEPS_SECONDS = [15, 30, 60, 60]  # 4 retries: 15s, 30s, 60s, 60s apart
 BACKOFF_JITTER_SECONDS = 15
 
@@ -124,7 +124,7 @@ def generate_episode(seed, fault_name):
 
 def generate_episodes(episodes_per_fault=26):
     """episodes_per_fault=26 across 3 fault types yields 78 labeled episodes --
-    the exact set eval/run_eval.py scores the correlation engine against."""
+    the exact set run_eval.py scores the correlation engine against."""
     episodes = []
     seed = 0
     for fault_name in FAULT_TYPES:

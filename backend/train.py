@@ -101,7 +101,10 @@ def main():
 
     print(f"Trained on {len(train_rows)} rows from {len(train_episodes)} episodes")
     print(f"Validated on {len(val_episodes)} unseen episodes")
-    print(f"Median early-warning lead time: {median_lead:.1f}s ({len(leads)}/{len(val_episodes)} caught)")
+    if median_lead is None:
+        print(f"Median early-warning lead time: n/a (0/{len(val_episodes)} caught)")
+    else:
+        print(f"Median early-warning lead time: {median_lead:.1f}s ({len(leads)}/{len(val_episodes)} caught)")
 
     ARTIFACTS_DIR.mkdir(exist_ok=True)
     joblib.dump(model, MODEL_PATH)
