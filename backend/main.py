@@ -11,6 +11,7 @@ The API. Wires everything else together:
 
 import asyncio
 import os
+import random
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,6 +44,15 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 correlator = Correlator()
 detector = ml.FailureDetector.load(ARTIFACTS_DIR / "model.joblib", ARTIFACTS_DIR / "feature_distribution.json")
 incidents = []  # most-recently-processed incident reports, newest first
+
+# simulator.py builds each episode on its own clock starting near 0, which is
+# right for eval/train (each gets a fresh Correlator). Here one Correlator
+# runs for the whole server's life, and its watermark only moves forward --
+# so without this, a second injected episode's low timestamps would look
+# "long past" relative to the first episode's already-advanced watermark,
+# and get idle-gap-sealed after a single event. Shifting each new episode to
+# start after the previous one's last event keeps them on one real timeline.
+_next_episode_start = 0.0
 
 
 def handle_event(event):
@@ -88,9 +98,20 @@ def health():
 
 @app.post("/simulate/{fault_name}")
 async def simulate(fault_name: str):
+    global _next_episode_start
     if fault_name not in simulator.FAULT_TYPES:
         return {"error": f"unknown fault_name, choose one of {list(simulator.FAULT_TYPES)}"}
-    events, root_cause_service, _, _ = simulator.generate_episode(seed=hash(fault_name) % 10_000, fault_name=fault_name)
+    # A fresh random seed each call gives a unique trace_id -- reusing the
+    # same seed would reuse the same trace_id, which the correlator has
+    # already sealed after the first injection, so every event after that
+    # gets silently dropped as "late."
+    seed = random.randint(0, 1_000_000)
+    events, root_cause_service, _, _ = simulator.generate_episode(seed=seed, fault_name=fault_name)
+
+    for event in events:
+        event["timestamp"] += _next_episode_start
+    _next_episode_start = max(event["timestamp"] for event in events) + 60
+
     await kafka_io.send_events(events)
     return {"status": "sent", "event_count": len(events), "expected_root_cause": root_cause_service}
 
