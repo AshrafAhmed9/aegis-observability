@@ -8,6 +8,7 @@ export default defineConfig({
       '/health': 'http://127.0.0.1:8010',
       '/simulate': 'http://127.0.0.1:8010',
       '/incidents': 'http://127.0.0.1:8010',
+      '/predictions': 'http://127.0.0.1:8010',
       '/ml': 'http://127.0.0.1:8010',
       '/metrics': 'http://127.0.0.1:8010',
     },

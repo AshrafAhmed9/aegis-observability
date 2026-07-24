@@ -44,6 +44,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 correlator = Correlator()
 detector = ml.FailureDetector.load(ARTIFACTS_DIR / "model.joblib", ARTIFACTS_DIR / "feature_distribution.json")
 incidents = []  # most-recently-processed incident reports, newest first
+predictions = []  # most-recent ML shadow-mode risk scores, newest first
+MAX_PREDICTIONS_KEPT = 50
 
 # simulator.py builds each episode on its own clock starting near 0, which is
 # right for eval/train (each gets a fresh Correlator). Here one Correlator
@@ -82,7 +84,14 @@ def _score_shadow_predictions(events, rca_result):
     seen = []
     for event in events:
         features = ml.extract_features(seen, event, seen)
-        detector.predict_risk(features)
+        risk = float(detector.predict_risk(features))
+        predictions.insert(0, {
+            "service": event["service"],
+            "severity": event["severity"],
+            "risk": risk,
+            "high_risk": risk >= ml.RISK_THRESHOLD,
+        })
+        del predictions[MAX_PREDICTIONS_KEPT:]
         seen.append(event)
 
 
@@ -119,6 +128,11 @@ async def simulate(fault_name: str):
 @app.get("/incidents")
 def list_incidents():
     return incidents[:20]
+
+
+@app.get("/predictions")
+def list_predictions():
+    return predictions[:20]
 
 
 @app.get("/ml/info")

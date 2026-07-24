@@ -4,19 +4,30 @@ const FAULT_TYPES = ['redis_leak', 'queue_backlog', 'deadlock_burst']
 
 export default function App() {
   const [incidents, setIncidents] = useState([])
+  const [predictions, setPredictions] = useState([])
   const [mlInfo, setMlInfo] = useState(null)
   const [statusMessage, setStatusMessage] = useState('')
 
   useEffect(() => {
     refreshIncidents()
+    refreshPredictions()
     refreshMlInfo()
-    const interval = setInterval(refreshIncidents, 3000)
+    const interval = setInterval(() => {
+      refreshIncidents()
+      refreshPredictions()
+      refreshMlInfo()
+    }, 3000)
     return () => clearInterval(interval)
   }, [])
 
   async function refreshIncidents() {
     const response = await fetch('/incidents')
     setIncidents(await response.json())
+  }
+
+  async function refreshPredictions() {
+    const response = await fetch('/predictions')
+    setPredictions(await response.json())
   }
 
   async function refreshMlInfo() {
@@ -47,7 +58,30 @@ export default function App() {
       {statusMessage && <p className="status-line">{statusMessage}</p>}
 
       <MlStatusCard mlInfo={mlInfo} />
+      <PredictionsPanel predictions={predictions} />
       <IncidentList incidents={incidents} />
+    </div>
+  )
+}
+
+function PredictionsPanel({ predictions }) {
+  if (predictions.length === 0) return null
+  return (
+    <div className="card">
+      <h3>ML Shadow Predictions</h3>
+      <p className="subtitle">
+        Scored alongside every event, before the deterministic engine decides root cause.
+        Never overrides it -- shown here just to see what the model would have called.
+      </p>
+      {predictions.map((prediction, index) => (
+        <div key={index} className="prediction-row">
+          <span>{prediction.service}</span>
+          <span className="badge">{prediction.severity}</span>
+          <span className={`badge ${prediction.high_risk ? 'critical' : 'ok'}`}>
+            risk {prediction.risk.toFixed(2)}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

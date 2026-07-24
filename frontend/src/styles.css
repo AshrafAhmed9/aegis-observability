@@ -85,6 +85,19 @@ button:hover {
 .badge.warn { background: var(--warn); color: #000; }
 .badge.critical { background: var(--critical); }
 
+.prediction-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.prediction-row:first-of-type {
+  border-top: none;
+}
+
 .empty {
   color: var(--text-muted);
   font-style: italic;
