@@ -1,86 +1,106 @@
-from app.correlation import CorrelationEngine
+import rca
+from correlator import Correlator
+from simulator import generate_episodes
 
 
-def test_redis_storm_root_cause():
-    """redis-cache should be ROOT_CAUSE, api-gateway should be SYMPTOM."""
-    nodes = [
-        {"service_name": "api-gateway", "max_severity": "CRITICAL", "error_classes": ["GatewayTimeout"], "latency_ms": 15004.8, "event_count": 3},
-        {"service_name": "checkout-service", "max_severity": "INFO", "error_classes": [], "latency_ms": 0, "event_count": 2},
-        {"service_name": "redis-cache", "max_severity": "ERROR", "error_classes": ["redis.exceptions.ConnectionError"], "latency_ms": 5000, "event_count": 4},
-        {"service_name": "celery-worker", "max_severity": "CRITICAL", "error_classes": [], "latency_ms": 0, "event_count": 5},
-        {"service_name": "postgres-db", "max_severity": "INFO", "error_classes": [], "latency_ms": 120.4, "event_count": 2},
+def event(service, timestamp, severity="INFO", span_id=None, parent_span_id=None, error_class=None):
+    return {"trace_id": "t1", "span_id": span_id or f"{service}-{timestamp}", "parent_span_id": parent_span_id,
+            "service": service, "timestamp": timestamp, "severity": severity, "error_class": error_class}
+
+
+def test_build_graph_tracks_max_severity_per_service():
+    events = [event("api", 0, "INFO"), event("api", 1, "ERROR")]
+    nodes, _ = rca.build_graph(events)
+    assert nodes["api"]["max_severity"] == "ERROR"
+
+
+def test_build_graph_draws_edge_from_parent_span_service():
+    events = [
+        event("cache", 0, "ERROR", span_id="cache-span"),
+        event("api", 1, "CRITICAL", parent_span_id="cache-span"),
     ]
-    edges = [
-        {"source_service": "api-gateway", "target_service": "checkout-service", "propagation_type": "RPC"},
-        {"source_service": "checkout-service", "target_service": "postgres-db", "propagation_type": "RPC"},
-        {"source_service": "checkout-service", "target_service": "celery-worker", "propagation_type": "RPC"},
-        {"source_service": "celery-worker", "target_service": "redis-cache", "propagation_type": "RPC"},
-    ]
-    result = CorrelationEngine.classify_root_cause(nodes, edges)
-    assert result["roles"]["redis-cache"] == "ROOT_CAUSE"
-    assert result["roles"]["api-gateway"] == "SYMPTOM"
-    assert result["roles"]["celery-worker"] == "SYMPTOM"
-    assert result["ranked_root_causes"][0]["service"] == "redis-cache"
-    assert result["ranked_root_causes"][0]["root_cause_class"] == "resource_exhaustion"
+    _, edges = rca.build_graph(events)
+    assert ("cache", "api") in edges
 
 
-def test_pg_deadlock_root_cause():
-    """postgres-db with deadlock err_class should be CYCLE_MEMBER root."""
-    nodes = [
-        {"service_name": "api-gateway", "max_severity": "CRITICAL", "error_classes": ["InternalServerError"], "latency_ms": 100, "event_count": 2},
-        {"service_name": "order-service", "max_severity": "ERROR", "error_classes": ["sqlalchemy.exc.OperationalError"], "latency_ms": 50, "event_count": 3},
-        {"service_name": "postgres-db", "max_severity": "ERROR", "error_classes": ["postgres.deadlock"], "latency_ms": 3330, "event_count": 5},
+def test_build_graph_no_self_edge_same_service():
+    events = [
+        event("api", 0, "INFO", span_id="a"),
+        event("api", 1, "INFO", parent_span_id="a"),
     ]
-    edges = [
-        {"source_service": "api-gateway", "target_service": "order-service", "propagation_type": "RPC"},
-        {"source_service": "order-service", "target_service": "postgres-db", "propagation_type": "RPC"},
-    ]
-    result = CorrelationEngine.classify_root_cause(nodes, edges)
-    assert result["roles"]["postgres-db"] == "CYCLE_MEMBER"
-    assert result["roles"]["api-gateway"] == "SYMPTOM"
-    assert result["cycle"]["detected"] is True
-    assert result["cycle"]["kind"] == "deadlock"
-    assert result["ranked_root_causes"][0]["service"] == "postgres-db"
+    _, edges = rca.build_graph(events)
+    assert edges == set()
 
 
-def test_no_degraded_services():
-    """All healthy → empty roles, no root causes."""
-    nodes = [
-        {"service_name": "api-gateway", "max_severity": "INFO", "error_classes": [], "latency_ms": 45, "event_count": 1},
-        {"service_name": "checkout-service", "max_severity": "INFO", "error_classes": [], "latency_ms": 10, "event_count": 1},
-    ]
-    edges = [{"source_service": "api-gateway", "target_service": "checkout-service", "propagation_type": "RPC"}]
-    result = CorrelationEngine.classify_root_cause(nodes, edges)
-    assert result["roles"] == {}
-    assert result["ranked_root_causes"] == []
+def test_rank_root_causes_single_degraded_service():
+    nodes = {"api": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0}}
+    assert rca.rank_root_causes(nodes, set()) == ["api"]
 
 
-def test_temporal_edges_lower_confidence():
-    """TEMPORAL edge basis should multiply scores by 0.7."""
-    nodes = [
-        {"service_name": "redis-cache", "max_severity": "ERROR", "error_classes": ["redis.exceptions.ConnectionError"], "latency_ms": 5000, "event_count": 1},
-        {"service_name": "api-gateway", "max_severity": "CRITICAL", "error_classes": ["GatewayTimeout"], "latency_ms": 15000, "event_count": 1},
-    ]
-    edges = [
-        {"source_service": "api-gateway", "target_service": "redis-cache", "propagation_type": "TEMPORAL"},
-    ]
-    result = CorrelationEngine.classify_root_cause(nodes, edges)
-    assert result["edge_basis"] == "TEMPORAL"
-    for rc in result["ranked_root_causes"]:
-        assert rc["score"] <= 0.7
+def test_rank_root_causes_no_degraded_services():
+    nodes = {"api": {"max_severity": "INFO", "error_classes": set(), "first_error_time": None}}
+    assert rca.rank_root_causes(nodes, set()) == []
 
 
-def test_deterministic_across_runs():
-    """Same input → same output, twice."""
-    nodes = [
-        {"service_name": "redis-cache", "max_severity": "ERROR", "error_classes": ["redis.exceptions.ConnectionError"], "latency_ms": 5000, "event_count": 4},
-        {"service_name": "celery-worker", "max_severity": "CRITICAL", "error_classes": [], "latency_ms": 0, "event_count": 5},
-        {"service_name": "api-gateway", "max_severity": "CRITICAL", "error_classes": ["GatewayTimeout"], "latency_ms": 15004.8, "event_count": 3},
-    ]
-    edges = [
-        {"source_service": "api-gateway", "target_service": "celery-worker", "propagation_type": "RPC"},
-        {"source_service": "celery-worker", "target_service": "redis-cache", "propagation_type": "RPC"},
-    ]
-    r1 = CorrelationEngine.classify_root_cause(nodes, edges)
-    r2 = CorrelationEngine.classify_root_cause(nodes, edges)
-    assert r1 == r2
+def test_rank_root_causes_orders_cause_before_effect():
+    nodes = {
+        "cache": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0},
+        "api": {"max_severity": "CRITICAL", "error_classes": set(), "first_error_time": 5},
+    }
+    edges = {("cache", "api")}
+    ranked = rca.rank_root_causes(nodes, edges)
+    assert ranked[0] == "cache"
+
+
+def test_rank_root_causes_falls_back_to_earliest_error_without_edges():
+    nodes = {
+        "cache": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 10},
+        "queue": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 2},
+    }
+    ranked = rca.rank_root_causes(nodes, set())
+    assert ranked[0] == "queue"
+
+
+def test_rank_root_causes_handles_a_two_node_cycle():
+    nodes = {
+        "a": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0},
+        "b": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 1},
+    }
+    edges = {("a", "b"), ("b", "a")}
+    ranked = rca.rank_root_causes(nodes, edges)
+    assert set(ranked) == {"a", "b"}
+
+
+def test_classify_error_type_deadlock():
+    assert rca.classify_error_type({"postgres.deadlock"}) == "deadlock"
+
+
+def test_classify_error_type_resource_exhaustion():
+    assert rca.classify_error_type({"redis.exceptions.ConnectionError"}) == "resource_exhaustion"
+
+
+def test_classify_error_type_unknown_defaults_to_failure():
+    assert rca.classify_error_type({"some.other.Error"}) == "failure"
+
+
+def _run_through_pipeline(events):
+    correlator = Correlator()
+    for e in events:
+        correlator.add_event(e)
+    sealed = correlator.flush_all()[0]
+    return rca.analyze(sealed)
+
+
+def test_analyze_end_to_end_identifies_redis_leak_root_cause():
+    from simulator import generate_episode
+    events, root_cause_service, _, _ = generate_episode(seed=1, fault_name="redis_leak")
+    result = _run_through_pipeline(events)
+    assert result["ranked_root_causes"][0] == root_cause_service
+
+
+def test_all_78_generated_episodes_are_correctly_diagnosed():
+    episodes = generate_episodes()
+    assert len(episodes) == 78
+    for episode in episodes:
+        result = _run_through_pipeline(episode["events"])
+        assert result["ranked_root_causes"][0] == episode["root_cause_service"]

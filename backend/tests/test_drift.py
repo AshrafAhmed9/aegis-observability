@@ -1,56 +1,77 @@
-import json
-import random
-import pytest
-import app.drift as drift_mod
-from app.drift import DriftMonitor
+from ml import DriftMonitor, FEATURE_NAMES
+
+TRAINING_DISTRIBUTION = {
+    name: {"p10": 0.0, "p50": 1.0, "p90": 2.0} for name in FEATURE_NAMES
+}
 
 
-@pytest.fixture
-def tmp_drift(tmp_path, monkeypatch):
-    registry_path = tmp_path / "registry.json"
-    dist_dir = tmp_path / "failure_model" / "v1"
-    dist_dir.mkdir(parents=True)
-    dist = {"feat_a": {"mean": 0.5, "std": 0.1, "p10": 0.3, "p50": 0.5, "p90": 0.7}}
-    (dist_dir / "feature_distribution.json").write_text(json.dumps(dist))
-    registry_path.write_text(json.dumps({"failure_model": {"champion": 1, "versions": [1]}}))
-    monkeypatch.setattr(drift_mod, "ARTIFACTS_ROOT", str(tmp_path))
-    monkeypatch.setattr(drift_mod, "REGISTRY_PATH", str(registry_path))
-
-
-def test_drift_unavailable_without_registry(tmp_path, monkeypatch):
-    monkeypatch.setattr(drift_mod, "REGISTRY_PATH", str(tmp_path / "missing.json"))
-    monitor = DriftMonitor()
-    assert monitor.available is False
-    assert monitor.status()["available"] is False
-
-
-def test_drift_stable_when_matching_distribution(tmp_drift):
-    monitor = DriftMonitor()
-    assert monitor.available is True
-    rng = random.Random(1)
-    # Reproduce the training distribution's actual bucket shape (10/40/40/10
-    # around p10=0.3, p50=0.5, p90=0.7) rather than a uniform range —
-    # otherwise the "expected" bucket proportions don't match at all and
-    # PSI correctly reports drift.
-    for _ in range(200):
-        r = rng.random()
-        if r < 0.10:
-            value = rng.uniform(0.1, 0.3)
-        elif r < 0.50:
-            value = rng.uniform(0.3, 0.5)
-        elif r < 0.90:
-            value = rng.uniform(0.5, 0.7)
-        else:
-            value = rng.uniform(0.7, 0.9)
-        monitor.observe({"feat_a": value})
+def test_status_with_no_observations_is_ok():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
     status = monitor.status()
-    assert status["level"] in ("OK", "WARN")
+    assert status["max_psi"] == 0.0
+    assert status["level"] == "OK"
 
 
-def test_drift_alert_on_shifted_distribution(tmp_drift):
-    monitor = DriftMonitor()
-    for _ in range(100):
-        monitor.observe({"feat_a": 5.0})
+def test_observe_records_values_per_feature():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    monitor.observe([1, 1, 1, 1])
+    assert len(monitor.observed_values["warning_count"]) == 1
+
+
+def test_psi_is_zero_with_fewer_than_ten_samples():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    for _ in range(5):
+        monitor.observe([1, 1, 1, 1])
+    assert monitor._psi_for("warning_count") == 0.0
+
+
+def test_psi_is_low_when_live_data_matches_training_distribution():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    # Reproduce the training buckets' expected shares (10/40/40/10) instead of
+    # a single repeated value, which would itself look like a shifted
+    # distribution even if it's "close" to the median.
+    values = [-1.0] * 5 + [0.5] * 20 + [1.5] * 20 + [3.0] * 5
+    for value in values:
+        monitor.observe([value, value, value, value])
+    assert monitor.status()["level"] == "OK"
+
+
+def test_psi_is_high_when_live_data_has_shifted():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    for _ in range(50):
+        monitor.observe([100, 100, 100, 100])  # far outside the training range
+    assert monitor.status()["level"] == "ALERT"
+
+
+def test_bucket_shares_sum_to_one():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    shares = monitor._bucket_shares([0.0, 1.0, 1.5, 3.0], [0.0, 1.0, 2.0])
+    assert abs(sum(shares) - 1.0) < 1e-9
+
+
+def test_status_reports_every_feature():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
     status = monitor.status()
-    assert status["level"] == "ALERT"
-    assert status["max_psi"] > 0.25
+    assert set(status["features"].keys()) == set(FEATURE_NAMES)
+
+
+def test_psi_calculation_does_not_crash_on_empty_bucket():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    for _ in range(20):
+        monitor.observe([0.0, 0.0, 0.0, 0.0])  # all in the lowest bucket, others empty
+    assert isinstance(monitor.status()["max_psi"], float)
+
+
+def test_level_thresholds_are_ordered():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    assert monitor._level_for(0.05) == "OK"
+    assert monitor._level_for(0.15) == "WARN"
+    assert monitor._level_for(0.30) == "ALERT"
+
+
+def test_drifted_feature_does_not_hide_behind_a_stable_one():
+    monitor = DriftMonitor(TRAINING_DISTRIBUTION)
+    for _ in range(50):
+        monitor.observe([1, 100, 1, 1])  # only error_count has drifted
+    status = monitor.status()
+    assert status["features"]["error_count"] > status["features"]["warning_count"]

@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, v2-streaming]
+    branches: [main]
   pull_request:
-    branches: [main, v2-streaming]
+    branches: [main]
 
 jobs:
-  backend-base:
-    name: Backend tests (base install, no ML deps)
+  backend:
+    name: Backend tests + eval
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -18,24 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt pytest
-      - run: python -m pytest tests/ -v
-      - name: Run deterministic eval scorecard
-        run: python eval/run_eval.py
-
-  backend-ml:
-    name: Backend tests (with ML layer)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt -r requirements-ml.txt pytest
-      - run: python -m pytest tests/ -v
+      - run: pip install -r requirements.txt
+      - run: pytest -v
+      - name: Train the model and run the evaluation
+        run: |
+          python train.py
+          python run_eval.py
 
   frontend-build:
     name: Frontend build

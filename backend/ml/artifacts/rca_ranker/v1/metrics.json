@@ -1,6 +1,0 @@
-{
-  "ml_top1_accuracy": 1.0,
-  "kahn_top1_accuracy": 1.0,
-  "ml_kahn_agreement_rate": 1.0,
-  "n_val_incidents": 15
-}

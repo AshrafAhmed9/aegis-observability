@@ -1,128 +1,107 @@
-import asyncio
-import random
-import time
-from datetime import datetime, timezone, timedelta
-
-import app.simulator as sim_mod
-from app.simulator import SimulatedFleet, FAULTS
+import simulator
 
 
-def test_baseline_traces_have_valid_span_chains():
-    events = []
-    fleet = SimulatedFleet(emit=events.append, seed=42)
-    fleet.tick()
-    assert events
-    by_trace = {}
-    for ev in events:
-        by_trace.setdefault(ev["trace_id"], []).append(ev)
-    for trace_id, trace_events in by_trace.items():
-        span_ids = {e["span_id"] for e in trace_events}
-        roots = [e for e in trace_events if "parent_span_id" not in e]
-        assert len(roots) == 1
-        for e in trace_events:
-            if "parent_span_id" in e:
-                assert e["parent_span_id"] in span_ids
+def test_generate_episode_returns_nonempty_events():
+    events, _, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    assert len(events) > 0
 
 
-def test_all_faults_registered_and_ramp_monotonically():
-    for name, fault_cls in FAULTS.items():
-        fault = fault_cls()
-        assert fault.name == name
-        if fault.target_service and fault.ramp_seconds > 0:
-            rng = random.Random(1)
-            values = []
-            for t in [0, fault.ramp_seconds * 0.25, fault.ramp_seconds * 0.5,
-                      fault.ramp_seconds * 0.75, fault.ramp_seconds * 0.99]:
-                out = fault.apply_target(t, rng)
-                metric_key = next((k for k in out if k in
-                                    ("connection_pool_usage", "queue_depth")), None)
-                if metric_key:
-                    values.append(out[metric_key])
-            assert values == sorted(values)
+def test_redis_leak_root_cause_is_cache():
+    _, root_cause_service, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    assert root_cause_service == "cache"
 
 
-def test_inject_unknown_fault_raises():
-    fleet = SimulatedFleet(emit=lambda e: None)
-    try:
-        fleet.inject("not_a_real_fault")
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
+def test_queue_backlog_root_cause_is_queue():
+    _, root_cause_service, _, _ = simulator.generate_episode(seed=1, fault_name="queue_backlog")
+    assert root_cause_service == "queue"
 
 
-def test_seeded_runs_are_reproducible():
-    events_a, events_b = [], []
-    fleet_a = SimulatedFleet(emit=events_a.append, seed=7)
-    fleet_b = SimulatedFleet(emit=events_b.append, seed=7)
-    for _ in range(3):
-        fleet_a.tick()
-        fleet_b.tick()
-
-    def _strip_ts(events):
-        return [{k: v for k, v in e.items() if k != "timestamp"} for e in events]
-
-    assert _strip_ts(events_a) == _strip_ts(events_b)
+def test_deadlock_burst_root_cause_is_database():
+    _, root_cause_service, _, _ = simulator.generate_episode(seed=1, fault_name="deadlock_burst")
+    assert root_cause_service == "database"
 
 
-def test_cascade_lags_target_so_root_cause_ordering_is_correct(monkeypatch):
-    """Regression: cascade (symptom) must not out-race the target (root
-    cause) in timestamp order, or the EVENT_TIME RCA fallback picks the
-    wrong service as root cause.
-
-    Real ticks are 1.5 real seconds apart, which dwarfs the 0-105ms
-    intra-trace span offsets. A naive test that fast-forwards
-    `_fault_started_at` without advancing wall time doesn't preserve that
-    gap and can invert the ordering by pure coincidence, so the wall clock
-    itself is faked here to advance one tick's worth of real time per call.
-    """
-    fake_now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
-
-    class FakeDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fake_now[0]
-
-    monkeypatch.setattr(sim_mod, "datetime", FakeDateTime)
-
-    events = []
-    fleet = SimulatedFleet(emit=events.append, seed=3)
-    fleet.inject("redis_connection_leak")
-    fault = fleet._fault
-
-    # Stage 1: just past ramp -> failure, well before cascade_delay elapses.
-    # Only the target (redis-cache) should error here.
-    fleet._fault_started_at = time.monotonic() - (fault.ramp_seconds + 0.5)
-    for _ in range(3):
-        fleet.tick()
-        fake_now[0] += timedelta(seconds=fleet.TICK_SECONDS)
-
-    # Stage 2: now past cascade_delay too — the cascade (api-gateway) fires.
-    fleet._fault_started_at = time.monotonic() - (fault.ramp_seconds + fault.cascade_delay_seconds + 2.0)
-    for _ in range(3):
-        fleet.tick()
-        fake_now[0] += timedelta(seconds=fleet.TICK_SECONDS)
-
-    def first_error_ts(service):
-        matches = [e["timestamp"] for e in events
-                   if e["service"] == service and e.get("severity") in ("ERROR", "CRITICAL")]
-        return min(matches) if matches else None
-
-    redis_ts = first_error_ts("redis-cache")
-    gw_ts = first_error_ts("api-gateway")
-    assert redis_ts is not None
-    assert gw_ts is not None
-    assert redis_ts < gw_ts
+def test_target_service_logs_exactly_one_warning_before_its_error():
+    events, root_cause_service, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    target_events = [e for e in events if e["service"] == root_cause_service]
+    warnings = [e for e in target_events if e["severity"] == "WARNING"]
+    assert len(warnings) == 1
 
 
-def test_start_stop_lifecycle():
-    fleet = SimulatedFleet(emit=lambda e: None)
-    assert not fleet.running
+def test_failure_time_is_after_warning_time():
+    _, _, warning_time, failure_time = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    assert failure_time > warning_time
 
-    async def _run():
-        fleet.start()
-        assert fleet.running
-        await asyncio.sleep(0)
-        fleet.stop()
-        assert not fleet.running
 
-    asyncio.run(_run())
+def test_cascade_events_are_logged_by_api():
+    events, _, _, failure_time = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    cascade_events = [e for e in events if e["severity"] == "CRITICAL"]
+    assert all(e["service"] == "api" for e in cascade_events)
+    assert len(cascade_events) > 0
+
+
+def test_cascade_events_link_to_targets_error_span():
+    events, root_cause_service, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    target_error = next(e for e in events if e["service"] == root_cause_service and e["severity"] == "ERROR")
+    cascade_events = [e for e in events if e["severity"] == "CRITICAL"]
+    assert all(e["parent_span_id"] == target_error["span_id"] for e in cascade_events)
+
+
+def test_baseline_traffic_covers_all_services():
+    events, _, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    baseline_services = {e["service"] for e in events if e["severity"] == "INFO"}
+    assert baseline_services == set(simulator.SERVICES)
+
+
+def test_generate_episodes_default_count_is_78():
+    episodes = simulator.generate_episodes()
+    assert len(episodes) == 78
+
+
+def test_generate_episodes_seeds_are_unique():
+    episodes = simulator.generate_episodes()
+    seeds = [episode["seed"] for episode in episodes]
+    assert len(seeds) == len(set(seeds))
+
+
+def test_same_seed_and_fault_are_reproducible():
+    events_a, _, _, _ = simulator.generate_episode(seed=42, fault_name="redis_leak")
+    events_b, _, _, _ = simulator.generate_episode(seed=42, fault_name="redis_leak")
+    assert events_a == events_b
+
+
+def test_different_seeds_produce_different_backoff_gaps():
+    _, _, w1, f1 = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    _, _, w2, f2 = simulator.generate_episode(seed=2, fault_name="redis_leak")
+    assert (f1 - w1) != (f2 - w2)
+
+
+def test_exactly_three_fault_types():
+    assert len(simulator.FAULT_TYPES) == 3
+
+
+def test_span_counter_issues_unique_increasing_ids():
+    counter = simulator.SpanCounter()
+    ids = [counter.next() for _ in range(3)]
+    assert ids == ["span-1", "span-2", "span-3"]
+
+
+def test_make_event_has_all_required_fields():
+    e = simulator.make_event("t1", "s1", None, "api", 0.0, "INFO")
+    assert set(e.keys()) == {"trace_id", "span_id", "parent_span_id", "service", "timestamp", "severity", "error_class"}
+
+
+def test_episodes_per_fault_is_configurable():
+    episodes = simulator.generate_episodes(episodes_per_fault=5)
+    assert len(episodes) == 15
+
+
+def test_root_cause_is_never_the_api_service():
+    episodes = simulator.generate_episodes(episodes_per_fault=5)
+    assert all(episode["root_cause_service"] != "api" for episode in episodes)
+
+
+def test_all_events_in_an_episode_share_one_trace_id():
+    events, _, _, _ = simulator.generate_episode(seed=1, fault_name="redis_leak")
+    trace_ids = {e["trace_id"] for e in events}
+    assert len(trace_ids) == 1

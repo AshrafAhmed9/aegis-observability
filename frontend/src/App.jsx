@@ -1,92 +1,89 @@
-import { useState, useEffect } from 'react'
-import { usePolling, simulatorStatus, infraStatus, kafkaStats, useIntervalFetch } from './api.js'
-import StatusStrip from './components/StatusStrip.jsx'
-import ChaosPanel from './components/ChaosPanel.jsx'
-import PredictionsPanel from './components/PredictionsPanel.jsx'
-import ServiceGrid from './components/ServiceGrid.jsx'
-import IncidentFeed from './components/IncidentFeed.jsx'
-import PropagationGraph from './components/PropagationGraph.jsx'
-import DemoTimeline from './components/DemoTimeline.jsx'
-import PipelineMap from './components/PipelineMap.jsx'
-import GrafanaPanel from './components/GrafanaPanel.jsx'
-import ArtifactViewer from './components/ArtifactViewer.jsx'
-import ScoreboardStrip from './components/ScoreboardStrip.jsx'
-import ModelCard from './components/ModelCard.jsx'
+import { useEffect, useState } from 'react'
 
-const TABS = ['Live Ops', 'Pipeline Map', 'Evidence']
+const FAULT_TYPES = ['redis_leak', 'queue_backlog', 'deadlock_burst']
 
 export default function App() {
-  const { state, error } = usePolling(2000)
-  const [simStatus, setSimStatus] = useState(null)
-  const [tab, setTab] = useState('Live Ops')
-
-  const infra = useIntervalFetch(infraStatus, 5000, true)
-  const kafkaActive = tab === 'Pipeline Map' || tab === 'Evidence'
-  const kafka = useIntervalFetch(kafkaStats, 2000, kafkaActive)
+  const [incidents, setIncidents] = useState([])
+  const [mlInfo, setMlInfo] = useState(null)
+  const [statusMessage, setStatusMessage] = useState('')
 
   useEffect(() => {
-    const id = setInterval(() => {
-      simulatorStatus().then(setSimStatus).catch(() => {})
-    }, 2000)
-    simulatorStatus().then(setSimStatus).catch(() => {})
-    return () => clearInterval(id)
+    refreshIncidents()
+    refreshMlInfo()
+    const interval = setInterval(refreshIncidents, 3000)
+    return () => clearInterval(interval)
   }, [])
+
+  async function refreshIncidents() {
+    const response = await fetch('/incidents')
+    setIncidents(await response.json())
+  }
+
+  async function refreshMlInfo() {
+    const response = await fetch('/ml/info')
+    setMlInfo(await response.json())
+  }
+
+  async function injectFault(faultName) {
+    setStatusMessage(`Injecting ${faultName}...`)
+    const response = await fetch(`/simulate/${faultName}`, { method: 'POST' })
+    const result = await response.json()
+    setStatusMessage(`Sent ${result.event_count} events. Expected root cause: ${result.expected_root_cause}`)
+  }
 
   return (
     <div className="app">
-      <header className="app__header">
-        <h1>Aegis — Live SRE Console</h1>
-        <nav className="app__tabs">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              className={`app__tab ${tab === t ? 'app__tab--active' : ''}`}
-              onClick={() => setTab(t)}
-            >
-              {t}
-            </button>
-          ))}
-        </nav>
-        {error && <span className="app__error">connection error: {error}</span>}
-      </header>
+      <h1>Aegis</h1>
+      <p className="subtitle">Streaming trace correlation + failure prediction</p>
 
-      <StatusStrip infra={infra} totals={state?.totals} watermark={state?.watermark} />
+      <div className="fault-buttons">
+        {FAULT_TYPES.map((faultName) => (
+          <button key={faultName} onClick={() => injectFault(faultName)}>
+            Inject: {faultName.replace('_', ' ')}
+          </button>
+        ))}
+      </div>
 
-      {tab === 'Live Ops' && state && (
-        <>
-          <ChaosPanel simStatus={simStatus} onChange={setSimStatus} />
-          <PredictionsPanel predictions={state.predictions} watermark={state.watermark} />
-          <ScoreboardStrip scoreboard={state.scoreboard} />
-          <div className="app__row">
-            <ServiceGrid services={state.services} />
-            <div className="app__col">
-              <PropagationGraph graph={state.graph} />
-              <DemoTimeline state={state} simStatus={simStatus} />
-            </div>
-          </div>
-          <IncidentFeed incidents={state.incidents} />
-        </>
+      {statusMessage && <p className="status-line">{statusMessage}</p>}
+
+      <MlStatusCard mlInfo={mlInfo} />
+      <IncidentList incidents={incidents} />
+    </div>
+  )
+}
+
+function MlStatusCard({ mlInfo }) {
+  if (!mlInfo) return null
+  return (
+    <div className="card">
+      <h3>
+        ML Detector
+        <span className={`badge ${mlInfo.available ? 'ok' : 'warn'}`}>
+          {mlInfo.available ? 'available' : 'unavailable'}
+        </span>
+      </h3>
+      {mlInfo.available && (
+        <p>Drift level: {mlInfo.drift.level} (max PSI: {mlInfo.drift.max_psi.toFixed(3)})</p>
       )}
+    </div>
+  )
+}
 
-      {tab === 'Pipeline Map' && (
-        <PipelineMap
-          state={state}
-          simStatus={simStatus}
-          kafka={kafka}
-          infra={infra}
-          onSimChange={setSimStatus}
-        />
-      )}
-
-      {tab === 'Evidence' && (
-        <>
-          <GrafanaPanel infra={infra} />
-          <ModelCard />
-          <ArtifactViewer />
-        </>
-      )}
-
-      {!state && !error && <p className="app__loading">Connecting to Aegis…</p>}
+function IncidentList({ incidents }) {
+  if (incidents.length === 0) {
+    return <p className="empty">No incidents yet -- inject a fault above.</p>
+  }
+  return (
+    <div>
+      {incidents.map((incident) => (
+        <div className="card" key={incident.incident_id}>
+          <h3>
+            {incident.incident_id}: {incident.title}
+            <span className="badge critical">{incident.root_cause_class}</span>
+          </h3>
+          <p>{incident.hypothesis}</p>
+        </div>
+      ))}
     </div>
   )
 }

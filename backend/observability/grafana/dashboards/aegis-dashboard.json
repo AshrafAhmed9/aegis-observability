@@ -1,93 +1,36 @@
 {
-  "id": null,
-  "uid": "aegis-main",
-  "title": "Aegis Observability",
+  "title": "Aegis",
+  "uid": "aegis",
+  "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
-  "timezone": "browser",
-  "editable": true,
+  "time": { "from": "now-30m", "to": "now" },
   "panels": [
     {
+      "id": 1,
+      "title": "Events Ingested (rate)",
       "type": "timeseries",
-      "title": "Events ingested /s",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "aegis-prom" },
       "targets": [
-        { "refId": "A", "expr": "rate(aegis_events_ingested_total[1m])", "legendFormat": "{{job}}" }
+        {
+          "expr": "rate(aegis_events_ingested_total[1m])",
+          "refId": "A"
+        }
       ]
     },
     {
-      "type": "timeseries",
-      "title": "Traces emitted /s",
+      "id": 2,
+      "title": "Incidents Processed (total)",
+      "type": "stat",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "aegis-prom" },
       "targets": [
-        { "refId": "A", "expr": "rate(aegis_traces_emitted_total[1m])", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Open traces",
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_open_traces", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Incidents processed",
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_incidents_processed_total", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Active predictions",
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_predictions_active", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Late events",
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_late_events_total", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Predicted breach ETA (seconds)",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_predicted_breach_eta_seconds", "legendFormat": "{{service}}/{{metric}}" }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Correlation duration p95",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "histogram_quantile(0.95, rate(aegis_correlation_duration_seconds_bucket[5m]))", "legendFormat": "{{job}}" }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Root causes by class",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
-      "datasource": { "type": "prometheus", "uid": "aegis-prom" },
-      "targets": [
-        { "refId": "A", "expr": "aegis_root_cause_class_total", "legendFormat": "{{root_cause_class}} ({{job}})" }
+        {
+          "expr": "aegis_incidents_processed_total",
+          "refId": "A"
+        }
       ]
     }
   ]

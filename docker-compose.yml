@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   kafka:
     image: apache/kafka:3.7.0
@@ -49,6 +47,9 @@ services:
       - "8010:8000"
     env_file:
       - backend/.env
+    environment:
+      WAR_ROOM_DIR: /app/active_war_room
+      KAFKA_BROKER: kafka:9092
     volumes:
       - ./active_war_room:/app/active_war_room
     restart: unless-stopped
