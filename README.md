@@ -38,6 +38,10 @@ This version is a full rebuild of the project from the ground up: fewer files, e
 
 ## Quick Start
 
+Already have the backend venv and frontend deps installed? `./demo.sh` brings up Kafka,
+Prometheus, Grafana, the API, and the frontend in one shot, injects a fault so there's
+already an incident on screen, and opens the console.
+
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
 cd aegis-observability/backend
