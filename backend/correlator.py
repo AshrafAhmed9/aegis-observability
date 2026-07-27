@@ -26,8 +26,7 @@ WALL_IDLE_SECONDS = 10         # close a trace after this many real seconds of s
 
 
 class TraceBuffer:
-    def __init__(self, trace_id):
-        self.trace_id = trace_id
+    def __init__(self):
         self.events = []
         self.first_event_time = None
         self.last_event_time = None
@@ -56,7 +55,7 @@ class Correlator:
             return
 
         if trace_id not in self.open_traces:
-            self.open_traces[trace_id] = TraceBuffer(trace_id)
+            self.open_traces[trace_id] = TraceBuffer()
         self.open_traces[trace_id].add(event)
 
         self._advance_watermark(event["timestamp"])

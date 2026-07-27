@@ -45,8 +45,7 @@ correlator = Correlator()
 detector = ml.FailureDetector.load(ARTIFACTS_DIR / "model.joblib", ARTIFACTS_DIR / "feature_distribution.json")
 incidents = []  # most-recently-processed incident reports, newest first
 predictions = []  # most-recent ML shadow-mode risk scores, newest first
-MAX_INCIDENTS_KEPT = 50
-MAX_PREDICTIONS_KEPT = 50
+MAX_KEPT = 20  # both lists are trimmed to this, and served in full
 
 # simulator.py builds each episode on its own clock starting near 0, which is
 # right for eval/train (each gets a fresh Correlator). Here one Correlator
@@ -71,18 +70,18 @@ def process_trace(events):
         return  # nothing failed in this trace, nothing to report
 
     if detector is not None:
-        _score_shadow_predictions(events, rca_result)
+        _score_shadow_predictions(events)
 
     report = warroom.build_report(rca_result)
     warroom.write_artifacts(report, rca_result, events, WAR_ROOM_DIR)
     incidents.insert(0, report)
-    del incidents[MAX_INCIDENTS_KEPT:]
+    del incidents[MAX_KEPT:]
     INCIDENTS_PROCESSED.inc()
 
 
-def _score_shadow_predictions(events, rca_result):
+def _score_shadow_predictions(events):
     # Shadow mode: score the ML detector's opinion, don't act on it. The
-    # deterministic RCA result above is what actually drives the report.
+    # deterministic RCA result in process_trace is what drives the report.
     seen = []
     for event in events:
         # "api" only ever appears as a downstream cascade symptom, never as
@@ -93,7 +92,7 @@ def _score_shadow_predictions(events, rca_result):
             seen.append(event)
             continue
 
-        features = ml.extract_features(seen, event, seen)
+        features = ml.extract_features(seen, event)
         risk = float(detector.predict_risk(features))
         predictions.insert(0, {
             "service": event["service"],
@@ -101,7 +100,7 @@ def _score_shadow_predictions(events, rca_result):
             "risk": risk,
             "high_risk": risk >= ml.RISK_THRESHOLD,
         })
-        del predictions[MAX_PREDICTIONS_KEPT:]
+        del predictions[MAX_KEPT:]
         seen.append(event)
 
 
@@ -149,12 +148,12 @@ async def simulate(fault_name: str):
 
 @app.get("/incidents")
 def list_incidents():
-    return incidents[:20]
+    return incidents
 
 
 @app.get("/predictions")
 def list_predictions():
-    return predictions[:20]
+    return predictions
 
 
 @app.get("/ml/info")

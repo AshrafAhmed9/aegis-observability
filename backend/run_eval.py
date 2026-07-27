@@ -12,6 +12,7 @@ import ml
 import rca
 import simulator
 from correlator import Correlator
+from train import measure_lead_times, median, split_episodes
 
 MODEL_PATH = Path(__file__).resolve().parent / "artifacts" / "model.joblib"
 DISTRIBUTION_PATH = Path(__file__).resolve().parent / "artifacts" / "feature_distribution.json"
@@ -67,8 +68,6 @@ def evaluate_lead_time():
     """Loads the trained model and measures its early-warning lead time on
     the same held-out episodes train.py validated against. Returns None
     if no model has been trained yet."""
-    from train import measure_lead_times, median, split_episodes
-
     detector = ml.FailureDetector.load(MODEL_PATH, DISTRIBUTION_PATH)
     if detector is None:
         return None

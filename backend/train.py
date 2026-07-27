@@ -20,15 +20,15 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 MODEL_PATH = ARTIFACTS_DIR / "model.joblib"
 DISTRIBUTION_PATH = ARTIFACTS_DIR / "feature_distribution.json"
 
-TRAIN_EPISODES_PER_FAULT = 20   # of the 26 per fault, use 20 for training
-VAL_EPISODES_PER_FAULT = 6      # and the remaining 6, unseen, for validation
+EPISODES_PER_FAULT = 26
+TRAIN_EPISODES_PER_FAULT = 20   # the remaining 6 per fault are held out for validation
 
 
 def split_episodes():
     """Splits by whole episode, never by row -- so validation episodes are
     ones the model has never seen anything from, not just unseen rows
     within an episode it already trained on."""
-    all_episodes = simulator.generate_episodes(episodes_per_fault=26)
+    all_episodes = simulator.generate_episodes(episodes_per_fault=EPISODES_PER_FAULT)
     train_episodes, val_episodes = [], []
     counts_seen = {}
     for episode in all_episodes:
@@ -69,7 +69,7 @@ def measure_lead_times(model, val_episodes):
 
         for event in events:
             if event["service"] == target_service and event["severity"] == "WARNING":
-                features = ml.extract_features(seen, event, seen)
+                features = ml.extract_features(seen, event)
                 probability = model.predict_proba([features])[0][1]
                 if probability >= ml.RISK_THRESHOLD:
                     prediction_time = event["timestamp"]

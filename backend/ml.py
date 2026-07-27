@@ -9,6 +9,7 @@ no longer be reliable.
 """
 
 import json
+import math
 
 import joblib
 
@@ -29,7 +30,7 @@ PSI_OK_MAX = 0.1
 PSI_WARN_MAX = 0.25
 
 
-def extract_features(prior_events, current_event, all_prior_events):
+def extract_features(prior_events, current_event):
     """Builds the feature vector for current_event, using only events that
     happened before it -- a live system can't see the future, so neither
     should training data."""
@@ -44,7 +45,7 @@ def extract_features(prior_events, current_event, all_prior_events):
     else:
         seconds_since_last_event = 0.0
 
-    degraded_services = {e["service"] for e in all_prior_events if e["severity"] in ("ERROR", "CRITICAL")}
+    degraded_services = {e["service"] for e in prior_events if e["severity"] in ("ERROR", "CRITICAL")}
 
     return [warning_count, error_count, seconds_since_last_event, len(degraded_services)]
 
@@ -66,10 +67,10 @@ def build_training_rows(episode):
     seen = []
     for event in events:
         if event["service"] == target_service and event["severity"] == "WARNING":
-            features = extract_features(seen, event, seen)
+            features = extract_features(seen, event)
             rows.append((features, 1))
         elif event["service"] in non_failing_services and event["severity"] == "INFO":
-            features = extract_features(seen, event, seen)
+            features = extract_features(seen, event)
             rows.append((features, 0))
         seen.append(event)
 
@@ -146,7 +147,8 @@ class DriftMonitor:
 
         psi = 0.0
         for actual, expected in zip(actual_share, self.EXPECTED_BUCKET_SHARE):
-            psi += (actual - expected) * _safe_log(actual / expected) if actual > 0 else 0.0
+            if actual > 0:  # an empty bucket contributes nothing
+                psi += (actual - expected) * math.log(actual / expected)
         return psi
 
     def _bucket_shares(self, values, edges):
@@ -162,11 +164,6 @@ class DriftMonitor:
                 counts[3] += 1
         total = len(values)
         return [count / total for count in counts]
-
-
-def _safe_log(x):
-    import math
-    return math.log(x) if x > 0 else 0.0
 
 
 class FailureDetector:

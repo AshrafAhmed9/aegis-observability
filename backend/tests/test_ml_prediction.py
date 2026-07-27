@@ -4,7 +4,7 @@ from train import measure_lead_times, median, rows_for_episodes, split_episodes,
 
 
 def test_extract_features_returns_one_value_per_feature_name():
-    features = ml.extract_features([], {"service": "api", "timestamp": 0}, [])
+    features = ml.extract_features([], {"service": "api", "timestamp": 0})
     assert len(features) == len(ml.FEATURE_NAMES)
 
 
@@ -14,7 +14,7 @@ def test_warning_count_only_counts_same_service():
         {"service": "cache", "severity": "WARNING", "timestamp": 1},
     ]
     current = {"service": "api", "timestamp": 2}
-    warning_count = ml.extract_features(prior, current, prior)[0]
+    warning_count = ml.extract_features(prior, current)[0]
     assert warning_count == 1
 
 
@@ -24,26 +24,26 @@ def test_error_count_only_counts_error_and_critical():
         {"service": "api", "severity": "ERROR", "timestamp": 1},
     ]
     current = {"service": "api", "timestamp": 2}
-    error_count = ml.extract_features(prior, current, prior)[1]
+    error_count = ml.extract_features(prior, current)[1]
     assert error_count == 1
 
 
 def test_seconds_since_last_event_is_zero_with_no_history():
-    features = ml.extract_features([], {"service": "api", "timestamp": 5}, [])
+    features = ml.extract_features([], {"service": "api", "timestamp": 5})
     assert features[2] == 0.0
 
 
 def test_seconds_since_last_event_measures_the_gap():
     prior = [{"service": "api", "severity": "INFO", "timestamp": 3}]
     current = {"service": "api", "timestamp": 10}
-    features = ml.extract_features(prior, current, prior)
+    features = ml.extract_features(prior, current)
     assert features[2] == 7.0
 
 
 def test_degraded_services_count_is_global_not_per_service():
     prior = [{"service": "cache", "severity": "ERROR", "timestamp": 0}]
     current = {"service": "api", "timestamp": 1}
-    degraded_count = ml.extract_features(prior, current, prior)[3]
+    degraded_count = ml.extract_features(prior, current)[3]
     assert degraded_count == 1
 
 

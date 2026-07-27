@@ -132,18 +132,14 @@ def _try_groq_report(rca_result):
 
 
 def write_artifacts(report, rca_result, events, output_dir):
-    """Writes the six war room files into output_dir. Returns the list of
-    file paths written."""
+    """Writes the six war room files into output_dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    paths = [
-        _write_summary(report, rca_result, output_dir),
-        _write_timeline(events, output_dir),
-        _write_graph(rca_result, output_dir),
-        _write_postmortem(report, output_dir),
-        _write_csv(events, output_dir),
-        _write_patch(report, output_dir),
-    ]
-    return paths
+    _write_summary(report, rca_result, output_dir)
+    _write_timeline(events, output_dir)
+    _write_graph(rca_result, output_dir)
+    _write_postmortem(report, output_dir)
+    _write_csv(events, output_dir)
+    _write_patch(report, output_dir)
 
 
 def _write_summary(report, rca_result, output_dir):
@@ -159,7 +155,6 @@ def _write_summary(report, rca_result, output_dir):
         report["hypothesis"],
     ]
     path.write_text("\n".join(lines) + "\n")
-    return path
 
 
 def _write_timeline(events, output_dir):
@@ -170,7 +165,6 @@ def _write_timeline(events, output_dir):
             f"| {event['timestamp']:.1f}s | {event['service']} | {event['severity']} | {event.get('error_class') or ''} |"
         )
     path.write_text("\n".join(lines) + "\n")
-    return path
 
 
 def _write_graph(rca_result, output_dir):
@@ -180,7 +174,6 @@ def _write_graph(rca_result, output_dir):
         lines.append(f"    {cause} --> {effect}")
     lines.append("```")
     path.write_text("\n".join(lines) + "\n")
-    return path
 
 
 def _write_postmortem(report, output_dir):
@@ -195,7 +188,6 @@ def _write_postmortem(report, output_dir):
     ]
     lines.extend(f"- {step}" for step in report["remediation_steps"])
     path.write_text("\n".join(lines) + "\n")
-    return path
 
 
 def _write_csv(events, output_dir):
@@ -206,11 +198,9 @@ def _write_csv(events, output_dir):
     for event in sorted(events, key=lambda e: e["timestamp"]):
         writer.writerow({key: event.get(key, "") for key in writer.fieldnames})
     path.write_text(buffer.getvalue())
-    return path
 
 
 def _write_patch(report, output_dir):
     path = output_dir / "suggested_patch.diff"
     patch = PATCH_TEMPLATES.get(report["root_cause_class"], PATCH_TEMPLATES["failure"])
     path.write_text(patch)
-    return path
