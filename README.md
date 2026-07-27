@@ -108,7 +108,7 @@ warroom.py — writes 6 incident artifacts (summary, timeline, graph,
               with a deterministic fallback
 ```
 
-`main.py` wires all of this together as a FastAPI app: a `/simulate/{fault_name}` endpoint publishes a fault episode to Kafka, a background task consumes it and runs the pipeline above, and `/incidents` lists what's been processed.
+`main.py` wires all of this together as a FastAPI app: a `/simulate/{fault_name}` endpoint publishes a fault episode to Kafka, a background task consumes it and runs the pipeline above, and `/incidents` lists what's been processed. `/predictions` exposes the ML shadow detector's live risk scores as they're computed — visible in the frontend console as they happen, not just in the final report. A second background task closes a trace a few seconds after it goes quiet in real time, independent of the (synthetic) event timestamps, so an isolated injected fault with no later traffic behind it still resolves into an incident.
 
 ---
 
