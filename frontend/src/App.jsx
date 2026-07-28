@@ -8,31 +8,18 @@ export default function App() {
   const [mlInfo, setMlInfo] = useState(null)
   const [statusMessage, setStatusMessage] = useState('')
 
+  // There's no push channel from the backend, so the console just re-reads
+  // all three endpoints on a timer.
   useEffect(() => {
-    refreshIncidents()
-    refreshPredictions()
-    refreshMlInfo()
-    const interval = setInterval(() => {
-      refreshIncidents()
-      refreshPredictions()
-      refreshMlInfo()
-    }, 3000)
+    refreshAll()
+    const interval = setInterval(refreshAll, 3000)
     return () => clearInterval(interval)
   }, [])
 
-  async function refreshIncidents() {
-    const response = await fetch('/incidents')
-    setIncidents(await response.json())
-  }
-
-  async function refreshPredictions() {
-    const response = await fetch('/predictions')
-    setPredictions(await response.json())
-  }
-
-  async function refreshMlInfo() {
-    const response = await fetch('/ml/info')
-    setMlInfo(await response.json())
+  async function refreshAll() {
+    setIncidents(await (await fetch('/incidents')).json())
+    setPredictions(await (await fetch('/predictions')).json())
+    setMlInfo(await (await fetch('/ml/info')).json())
   }
 
   async function injectFault(faultName) {

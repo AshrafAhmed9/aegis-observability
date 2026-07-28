@@ -90,14 +90,14 @@ class Correlator:
         remaining_ids = list(self.open_traces.keys())
         return [self._seal(trace_id) for trace_id in remaining_ids]
 
-    def close_wall_idle_traces(self, wall_idle_seconds=WALL_IDLE_SECONDS):
+    def close_wall_idle_traces(self):
         """Closes any trace that hasn't received a new event in the last
-        wall_idle_seconds of real time -- the fallback for a trace with no
+        WALL_IDLE_SECONDS of real time -- the fallback for a trace with no
         later traffic to advance the event-time watermark past it."""
         sealed = []
         now = time.monotonic()
         for trace_id in list(self.open_traces.keys()):
             buffer = self.open_traces[trace_id]
-            if now - buffer.last_touched_wall >= wall_idle_seconds:
+            if now - buffer.last_touched_wall >= WALL_IDLE_SECONDS:
                 sealed.append(self._seal(trace_id))
         return sealed

@@ -9,10 +9,9 @@ The report itself is built by whichever of these works, in order:
    rather than guessing on its own.
 2. If there's no API key, or the call fails for any reason, build a plainer
    report directly from the RCA result -- no LLM involved.
-3. If there isn't even a root cause (nothing failed), return a stub.
 
-This is the "graceful degradation" chain: something reasonable always comes
-out, even with no ML and no LLM available.
+This is the "graceful degradation" chain: a full report always comes out,
+even with no ML and no LLM available.
 """
 
 import csv
@@ -47,27 +46,12 @@ PATCH_TEMPLATES = {
 def build_report(rca_result):
     """Returns a plain dict describing the incident. Tries Groq first, then
     falls back to a deterministic report built straight from rca_result."""
-    if not rca_result["ranked_root_causes"]:
-        return _stub_report()
-
     if os.environ.get("GROQ_API_KEY"):
         report = _try_groq_report(rca_result)
         if report is not None:
             return report
 
     return _deterministic_report(rca_result)
-
-
-def _stub_report():
-    return {
-        "incident_id": "INC-UNKNOWN",
-        "title": "No degraded services detected",
-        "root_cause_service": None,
-        "root_cause_class": "unknown",
-        "confidence": 0.0,
-        "hypothesis": "Insufficient data to diagnose an incident.",
-        "remediation_steps": [],
-    }
 
 
 def _deterministic_report(rca_result):
@@ -149,7 +133,7 @@ def _write_summary(report, rca_result, output_dir):
         "",
         f"**Root cause:** {report['root_cause_service']} ({report['root_cause_class']})",
         f"**Confidence:** {report['confidence']:.0%}",
-        f"**Degraded services:** {', '.join(rca_result['degraded_services'])}",
+        f"**Degraded services:** {', '.join(rca_result['ranked_root_causes'])}",
         "",
         "## Hypothesis",
         report["hypothesis"],

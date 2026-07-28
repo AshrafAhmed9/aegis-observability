@@ -115,13 +115,12 @@ def classify_error_type(error_classes):
 
 
 def analyze(events):
+    # ranked_root_causes holds exactly the degraded services, ordered from
+    # most-likely-cause to most-likely-symptom -- so an empty list also
+    # means "nothing failed in this trace".
     nodes, edges = build_graph(events)
-    ranked_root_causes = rank_root_causes(nodes, edges)
-    degraded_services = [service for service, node in nodes.items() if _is_degraded(node)]
-
     return {
         "nodes": nodes,
         "edges": edges,
-        "ranked_root_causes": ranked_root_causes,
-        "degraded_services": degraded_services,
+        "ranked_root_causes": rank_root_causes(nodes, edges),
     }

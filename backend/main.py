@@ -66,7 +66,7 @@ def handle_event(event):
 
 def process_trace(events):
     rca_result = rca.analyze(events)
-    if not rca_result["degraded_services"]:
+    if not rca_result["ranked_root_causes"]:
         return  # nothing failed in this trace, nothing to report
 
     if detector is not None:
