@@ -15,32 +15,172 @@
 
 ---
 
-## Overview
+## The problem
 
-I treat incident debugging as a **deterministic graph problem first, and an AI interpretation problem second**. Raw telemetry flows through a streaming correlation engine that buffers events by trace using event-time watermarks, builds a service dependency graph from span parentage, and classifies root cause vs. downstream symptom with a topological sort — all before either the ML layer or the LLM layer ever sees the data.
+When a distributed system breaks, the service making the most noise is usually not the one that
+broke.
 
-On top of that deterministic core sits a genuine self-training ML lifecycle: a simulator generates its own labeled fault data, a gradient-boosted classifier trains on it and runs in shadow mode alongside the deterministic engine, and a PSI-based drift monitor watches whether live traffic still looks like what the model was trained on. The deterministic engine is always the system of record — the ML layer only ever augments it, never overrides it.
+A database deadlocks. The API in front of it starts timing out and floods your alerts with
+CRITICAL errors, because it's the one facing users. The database logs a single line and goes
+quiet. At 3am, an on-call engineer is staring at hundreds of errors from a service that is
+working fine, trying to work out which of the screaming things actually started it.
 
-When an incident happens, an LLM (Groq) writes up a six-artifact incident report — summary, timeline, dependency graph, postmortem, raw telemetry, and a suggested patch — using the deterministic root cause as ground truth so it's explaining a decision the graph already made correctly, not guessing on its own. If the LLM is unavailable, a deterministic report takes over automatically. Nothing about the incident pipeline depends on the LLM being up.
+Aegis answers that question automatically.
 
-**Key capabilities:**
-- **Streaming correlation with event-time watermarks** — Kafka-fed, per-trace buffering, two independent closing rules (idle-gap and max-trace-age)
-- **Topological root-cause analysis** — Kahn's algorithm over a cause → effect dependency graph, correct on all 78 evaluated incidents
-- **Self-training ML lifecycle** — a `HistGradientBoostingClassifier` trained on simulator-generated data, run in shadow mode, evaluated on unseen episodes with a measured early-warning lead time
-- **PSI-based drift monitoring** — flags when live traffic no longer resembles the model's training distribution
-- **LLM-generated, six-artifact war rooms** — Groq-authored incident reports with automatic, deterministic fallback
-- **Fault-injection simulator** — a small synthetic service fleet with 3 fault types, used for both the live demo and the evaluation harness
-- **69 tests, one command eval harness** — `run_eval.py` regenerates the 78-episode benchmark and measures both RCA correctness and prediction lead time fresh, every run
+## The core idea
 
-This version is a full rebuild of the project from the ground up: fewer files, every one of them small enough to read end to end, no dead layers left over from earlier iterations. Same idea, same stack, meaningfully tighter implementation.
+Root-cause analysis is treated as a **graph problem, not a scoring problem**.
+
+Log lines aren't independent. When one service calls another, the downstream span records the
+identity of the request that triggered it. That's standard distributed tracing, modelled exactly
+as OpenTelemetry does it. Follow every one of those parent pointers and a pile of alerts becomes
+a directed graph of what caused what.
+
+On that graph, "which one started it" has an exact answer: **the node with no incoming edges.**
+
+```mermaid
+flowchart LR
+    DB["<b>database</b><br/>1 × ERROR<br/><i>postgres.deadlock</i>"] --> API["<b>api</b><br/>4 × CRITICAL<br/><i>GatewayTimeout</i>"]
+
+    style DB fill:#7f1d1d,stroke:#ef4444,stroke-width:3px,color:#fff
+    style API fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fff
+```
+
+`api` is louder by 4× and it is the *effect*. `database` has nothing pointing at it, so it's the
+cause. A topological sort (Kahn's algorithm) generalises this to arbitrarily deep dependency
+chains, and it's **correct on all 78 incidents in the evaluation set**.
+
+Everything else in the project exists to build that graph, read it, or explain what it found.
+
+## Why the AI doesn't decide anything
+
+There is a gradient-boosting model here and a large language model, and **neither is permitted
+to choose the root cause.** The graph chooses it.
+
+- The **ML model** runs in shadow mode, predicting which service is about to fail. Its scores
+  are recorded and evaluated, never acted upon.
+- The **LLM** is handed the root cause the graph already found and asked to write it up
+  readably. It narrates a decision; it doesn't make one.
+
+That boundary is deliberate. The deterministic engine is verifiable against known ground truth,
+78 times out of 78. The models are not. Information flows *into* the advisory layer and never
+back out into the decision, so the worst either model can do is be unhelpful. If the LLM is
+unreachable, the diagnosis is identical and only the prose gets plainer.
 
 ---
 
-## Quick Start
+## Architecture
 
-Already have the backend venv and frontend deps installed? `./demo.sh` brings up Kafka,
-Prometheus, Grafana, the API, and the frontend in one shot, injects a fault so there's
-already an incident on screen, and opens the console.
+Five layers. An event enters at the top and moves straight down; nothing skips a layer and
+nothing flows back up.
+
+```mermaid
+flowchart TD
+    subgraph L1["① Ingestion"]
+        direction LR
+        SIM["<b>simulator.py</b><br/>generates fault episodes"] --> KIO["<b>kafka_io.py</b><br/>produces JSON"]
+    end
+
+    KAFKA{{"<b>Kafka</b> · topic: telemetry.raw"}}
+
+    subgraph L2["② Stream — the only stateful layer"]
+        COR["<b>correlator.py</b><br/>buffers events per trace_id<br/>closes on event-time watermarks"]
+    end
+
+    subgraph L3["③ Decision — system of record"]
+        RCA["<b>rca.py</b><br/>dependency graph from span parentage<br/>Kahn's topological sort → root cause"]
+    end
+
+    subgraph L4["④ Advisory — no authority over the diagnosis"]
+        direction LR
+        ML["<b>ml.py</b><br/>shadow risk scoring<br/>PSI drift monitor"]
+        WR["<b>warroom.py</b><br/>6 incident artifacts<br/>Groq + deterministic fallback"]
+    end
+
+    subgraph L5["⑤ Serving"]
+        direction LR
+        MAIN["<b>main.py</b><br/>FastAPI · Prometheus"] --> UI["<b>React console</b>"]
+    end
+
+    KIO --> KAFKA --> COR
+    COR -->|"one sealed, time-sorted trace"| RCA
+    RCA --> ML
+    RCA -->|"the answer"| WR
+    ML --> MAIN
+    WR --> MAIN
+
+    style L3 fill:#0f172a,stroke:#38bdf8,stroke-width:2px
+    style RCA fill:#0c4a6e,stroke:#38bdf8,color:#fff
+    style KAFKA fill:#1e293b,stroke:#94a3b8,color:#fff
+```
+
+Two files sit outside this flow because they never run during a request: `train.py` produces the
+model, and `run_eval.py` grades the pipeline.
+
+### How each layer works
+
+**Ingestion.** `simulator.py` generates fault episodes for a four-service fleet: a cache leak, a
+queue backlog, and a database deadlock burst. Each episode has a known culprit, a realistic retry
+backoff before failure, and a cascade whose spans point back at the original error. Swapping this
+for a real OTLP collector would change nothing downstream, since the event shape is already the
+OpenTelemetry span model.
+
+**Stream.** Events arrive out of order and nothing ever signals that a trace is complete.
+`correlator.py` buffers them per `trace_id` and closes a trace on an **event-time watermark**,
+the newest timestamp seen minus a grace period, so network delays can't change the analysis. A
+max-age rule bounds memory, and a wall-clock idle rule handles the case where no further traffic
+exists to advance the watermark.
+
+**Decision.** `rca.py` builds one node per service and one edge per `parent_span_id` crossing a
+service boundary, then runs Kahn's algorithm over the failed services. It handles the awkward
+cases explicitly: services in a dependency cycle can't be ordered, so all of them are reported as
+causes, and failures with no causal edge between them fall back to earliest-error ordering, which
+is the weaker path and is labelled as such.
+
+**Advisory.** `ml.py` reduces each event to four features. The dominant one is how long a
+service has been silent: a healthy one checks in every five seconds, a struggling one goes quiet.
+Features come only from prior events, so no future information leaks into training. A PSI drift
+monitor over a rolling window reports whether live traffic still resembles what the model learned
+from. `warroom.py` writes six artifacts per incident: summary, timeline, Mermaid dependency
+graph, postmortem, raw telemetry CSV, and a suggested patch.
+
+**Serving.** `main.py` exposes the API and runs two background tasks: the Kafka consumer, and a
+loop that closes traces gone quiet in real time. The React console polls for incidents and live
+shadow predictions.
+
+---
+
+## Results
+
+Every number below is recomputed from scratch on each run, and re-verified by CI on every push.
+
+| Metric | Result | How it's measured |
+|---|---|---|
+| Root-cause accuracy | **78 / 78** | 26 episodes × 3 fault types, run blind through the real pipeline |
+| Median early warning | **193.4s** | First high-risk prediction → actual failure, across 18 held-out episodes |
+| Prediction recall | **18 / 18** | Held-out episodes where the model raised an alarm before failure |
+| Test suite | **69 passing** | Correlation, RCA, prediction, drift, simulation |
+
+```bash
+cd backend
+python train.py      # trains the model, prints the measured lead time
+python run_eval.py   # grades the correlation engine, writes scorecard.md
+```
+
+`run_eval.py` regenerates all 78 episodes, feeds each through an actual `Correlator` and
+`rca.analyze`, the same classes that serve live traffic rather than a test double, then compares
+the predicted root cause against the injected one. Misses are written to `scorecard.md` with
+their seeds, so any failure reproduces exactly.
+
+**On the benchmark being synthetic:** it is, deliberately, and that's what makes the number
+meaningful. Real production logs carry no ground truth, so an engine pointed at them can't be
+scored at all. Generating the faults means the correct answer is known before the engine sees the
+data. This validates the correlation and ranking logic; it does not claim to have survived the
+mess of real production telemetry.
+
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
@@ -48,22 +188,22 @@ cd aegis-observability/backend
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # optional: add a Groq API key — falls back to a deterministic report without one
-python train.py        # trains the failure-prediction model on simulator-generated data
+cp .env.example .env   # optional: without a Groq key, reports fall back to deterministic
+python train.py
 uvicorn main:app --port 8010
 ```
 
-Open **http://127.0.0.1:8010**. In a separate terminal, run the frontend:
+Frontend, in a second terminal:
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
 ```
 
-The frontend proxies API calls to `:8010`. Click a fault button to inject a failure and watch the incident appear once the correlator has processed it.
+Click a fault button to inject a failure and watch it resolve into an incident. Once dependencies
+are installed, **`./demo.sh`** does all of the above in one command: infrastructure, both
+servers, and an injected fault so the console isn't empty.
 
-### Full stack (Kafka + Prometheus + Grafana)
+### Full stack
 
 ```bash
 docker-compose up kafka prometheus grafana
@@ -78,70 +218,32 @@ docker-compose up kafka prometheus grafana
 
 ---
 
-## Evaluation
-
-```bash
-cd backend
-python train.py      # trains the model, prints its measured early-warning lead time
-python run_eval.py   # grades the correlation engine against 78 generated incidents
-```
-
-`run_eval.py` generates 78 labeled fault episodes (26 each of 3 fault types, via `simulator.py`), runs each one through the real correlator + RCA pipeline, and checks whether the predicted root cause matches the service that actually broke. It also measures the trained model's median early-warning lead time on 18 held-out episodes it never trained on.
-
-Both numbers are genuinely measured every time this runs — nothing is hardcoded.
-
----
-
-## Architecture
-
-```
-Kafka (topic: telemetry.raw)
-        │
-        ▼
-correlator.py — buffers events per trace_id, closes a trace once
-        │        the event-time watermark has moved far enough past it
-        ▼
-rca.py — builds a cause → effect graph from span parentage, then
-        │  Kahn's algorithm finds which service has nothing causing it
-        ▼
-ml.py — a gradient boosting model scores the same events in
-        │  shadow mode, plus a PSI-based drift monitor
-        ▼
-warroom.py — writes 6 incident artifacts (summary, timeline, graph,
-              postmortem, telemetry CSV, suggested patch), via Groq
-              with a deterministic fallback
-```
-
-`main.py` wires all of this together as a FastAPI app: a `/simulate/{fault_name}` endpoint publishes a fault episode to Kafka, a background task consumes it and runs the pipeline above, and `/incidents` lists what's been processed. `/predictions` exposes the ML shadow detector's live risk scores as they're computed — visible in the frontend console as they happen, not just in the final report. A second background task closes a trace a few seconds after it goes quiet in real time, independent of the (synthetic) event timestamps, so an isolated injected fault with no later traffic behind it still resolves into an incident.
-
----
-
-## Tests
-
-```bash
-cd backend
-pytest
-```
-
-69 tests across the four things this project actually does: stream correlation (`test_correlator.py`, `test_rca.py`), failure prediction (`test_ml_prediction.py`), drift detection (`test_drift.py`), and fault-injection simulation (`test_simulator.py`).
-
----
-
 ## Project layout
 
 ```
 backend/
-  correlator.py     event-time watermark buffering
-  rca.py             dependency graph + Kahn's topological sort
   simulator.py       synthetic fault episodes (demo traffic + eval data)
+  correlator.py      event-time watermark buffering
+  rca.py             dependency graph + Kahn's topological sort
   ml.py              feature extraction, GBM shadow detector, PSI drift
-  train.py           trains the model on simulator-generated data
   warroom.py         6-artifact incident reports (Groq + fallback)
   kafka_io.py        Kafka producer/consumer
-  main.py            FastAPI app
+  main.py            FastAPI app, background tasks, Prometheus metrics
+  train.py           trains the model on simulator-generated data
   run_eval.py        78-episode correctness + lead-time evaluation
   tests/             69 tests
-  observability/     Prometheus + Grafana config
+  observability/     Prometheus + Grafana provisioning
 frontend/
   src/App.jsx        single-page console
 ```
+
+```bash
+cd backend && pytest      # 69 tests, runs in about a second
+```
+
+Tests are fast because event timestamps are plain numbers rather than wall-clock time. A test
+for a 320-second closing rule doesn't wait 320 seconds.
+
+## License
+
+MIT
