@@ -76,42 +76,24 @@ nothing flows back up.
 
 ```mermaid
 flowchart TD
-    subgraph L1["① Ingestion"]
-        direction LR
-        SIM["<b>simulator.py</b><br/>generates fault episodes"] --> KIO["<b>kafka_io.py</b><br/>produces JSON"]
-    end
+    ING["① INGESTION<br/><b>simulator.py</b> + <b>kafka_io.py</b><br/><i>events onto Kafka</i>"]
+    KAFKA{{"Kafka · topic: telemetry.raw"}}
+    STR["② STREAM &nbsp;·&nbsp; the only stateful layer<br/><b>correlator.py</b><br/><i>buffers per trace, closes on event-time watermarks</i>"]
+    DEC["③ DECISION &nbsp;·&nbsp; system of record<br/><b>rca.py</b><br/><i>dependency graph + Kahn's sort → root cause</i>"]
+    ADV["④ ADVISORY &nbsp;·&nbsp; no authority over the diagnosis<br/><b>ml.py</b> risk scoring &amp; drift &nbsp;|&nbsp; <b>warroom.py</b> 6 artifacts"]
+    SRV["⑤ SERVING<br/><b>main.py</b> + React console"]
 
-    KAFKA{{"<b>Kafka</b> · topic: telemetry.raw"}}
+    ING --> KAFKA --> STR
+    STR -->|one sealed trace| DEC
+    DEC -->|the answer| ADV
+    ADV --> SRV
 
-    subgraph L2["② Stream — the only stateful layer"]
-        COR["<b>correlator.py</b><br/>buffers events per trace_id<br/>closes on event-time watermarks"]
-    end
-
-    subgraph L3["③ Decision — system of record"]
-        RCA["<b>rca.py</b><br/>dependency graph from span parentage<br/>Kahn's topological sort → root cause"]
-    end
-
-    subgraph L4["④ Advisory — no authority over the diagnosis"]
-        direction LR
-        ML["<b>ml.py</b><br/>shadow risk scoring<br/>PSI drift monitor"]
-        WR["<b>warroom.py</b><br/>6 incident artifacts<br/>Groq + deterministic fallback"]
-    end
-
-    subgraph L5["⑤ Serving"]
-        direction LR
-        MAIN["<b>main.py</b><br/>FastAPI · Prometheus"] --> UI["<b>React console</b>"]
-    end
-
-    KIO --> KAFKA --> COR
-    COR -->|"one sealed, time-sorted trace"| RCA
-    RCA --> ML
-    RCA -->|"the answer"| WR
-    ML --> MAIN
-    WR --> MAIN
-
-    style L3 fill:#0f172a,stroke:#38bdf8,stroke-width:2px
-    style RCA fill:#0c4a6e,stroke:#38bdf8,color:#fff
+    style DEC fill:#0c4a6e,stroke:#38bdf8,stroke-width:3px,color:#fff
     style KAFKA fill:#1e293b,stroke:#94a3b8,color:#fff
+    style ING fill:#1e293b,stroke:#64748b,color:#fff
+    style STR fill:#1e293b,stroke:#64748b,color:#fff
+    style ADV fill:#1e293b,stroke:#64748b,color:#fff
+    style SRV fill:#1e293b,stroke:#64748b,color:#fff
 ```
 
 Two files sit outside this flow because they never run during a request: `train.py` produces the
