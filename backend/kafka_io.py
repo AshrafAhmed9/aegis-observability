@@ -1,6 +1,8 @@
 """
-Thin Kafka wrapper: send events in, get events out, as plain JSON. Nothing
-else in the project needs to know Kafka is involved.
+Small wrapper around Kafka. Events go in and come out as plain JSON, so the
+rest of the code never has to know Kafka is involved. Kafka works like a
+conveyor belt: one side puts events on, the other takes them off, and
+neither waits for the other.
 """
 
 import json
@@ -16,6 +18,7 @@ BROKER = os.environ.get("KAFKA_BROKER", "localhost:9092")
 
 
 async def send_events(events, topic=TOPIC, broker=BROKER):
+    """Puts a list of events on the Kafka topic, one message each."""
     producer = AIOKafkaProducer(bootstrap_servers=broker, value_serializer=lambda v: json.dumps(v).encode("utf-8"))
     await producer.start()
     try:
@@ -26,7 +29,7 @@ async def send_events(events, topic=TOPIC, broker=BROKER):
 
 
 async def consume_forever(on_event, topic=TOPIC, broker=BROKER, group_id="aegis-correlators"):
-    """Runs until cancelled, calling on_event(event) for every message."""
+    """Listens for events forever and calls on_event(event) for each one."""
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=broker,
@@ -40,8 +43,7 @@ async def consume_forever(on_event, topic=TOPIC, broker=BROKER, group_id="aegis-
             try:
                 on_event(message.value)
             except Exception:
-                # One bad message shouldn't take down the whole consumer --
-                # log it and keep processing the rest of the stream.
+                # One bad message must not stop the whole listener. Log it, move on.
                 logger.exception("Failed to process a message; skipping it")
     finally:
         await consumer.stop()

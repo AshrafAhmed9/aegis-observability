@@ -1,11 +1,12 @@
 """
-A gradient-boosted classifier that watches for early warning signs of
-failure -- it runs alongside the deterministic correlation engine ("shadow
-mode"), never overriding it, just scored against what actually happens.
+The machine-learning part. A gradient-boosted model watches for early signs
+that a service is about to fail.
 
-Also includes drift detection: if live traffic starts looking statistically
-different from what the model was trained on, that's a sign the model may
-no longer be reliable.
+It runs in "shadow mode": its predictions are recorded and checked against
+what really happens, but it never decides the root cause. That is rca.py's job.
+
+Also here: drift detection. If live traffic starts to look different from the
+data the model was trained on, the model may no longer be trustworthy.
 """
 
 import json
@@ -15,25 +16,25 @@ import joblib
 
 FEATURE_NAMES = ["warning_count", "error_count", "seconds_since_last_event", "degraded_services_count"]
 
-# The model is only ever trained on these three services (see
-# build_training_rows) -- "api" only appears as a downstream cascade
-# symptom, never as its own labeled example, so a prediction on "api" would
-# be an untrained extrapolation, not a meaningful score.
+# The model is only trained on these three services. "api" only ever shows up
+# as a victim of someone else's failure, never as an example of its own, so
+# any score for "api" would be a guess about something the model never saw.
 TRAINED_SERVICES = {"cache", "queue", "database"}
 
-# A prediction only counts if we're at least this confident.
+# A service counts as "high risk" when the model's score is at least this.
 RISK_THRESHOLD = 0.5
 
-# How PSI (Population Stability Index) buckets are labeled, using the
-# thresholds analysts commonly use to flag distribution drift.
+# Drift levels. PSI (Population Stability Index) is a number for how much two
+# distributions differ: below 0.1 is fine, above 0.25 is a big change. These
+# are the usual cut-offs analysts use.
 PSI_OK_MAX = 0.1
 PSI_WARN_MAX = 0.25
 
 
 def extract_features(prior_events, current_event):
-    """Builds the feature vector for current_event, using only events that
-    happened before it -- a live system can't see the future, so neither
-    should training data."""
+    """Turns one event into 4 numbers the model can read, using only events
+    from before it. A live system can't see the future, so training must not
+    either."""
     service = current_event["service"]
     same_service_before = [e for e in prior_events if e["service"] == service]
 
@@ -51,13 +52,12 @@ def extract_features(prior_events, current_event):
 
 
 def build_training_rows(episode):
-    """Turns one episode into labeled (features, label) rows.
+    """Turns one episode into training examples of (numbers, label).
 
-    Positive rows: the target service's WARNING event -- this is the
-    moment a real predictor would need to raise an alarm.
-
-    Negative rows: baseline events from services that never fail in this
-    episode -- a clean example of "nothing is wrong here".
+    Label 1: the failing service's WARNING event. This is the moment the model
+    should raise an alarm.
+    Label 0: normal INFO events from services that stay healthy. These are
+    examples of "nothing is wrong here".
     """
     events = sorted(episode["events"], key=lambda e: e["timestamp"])
     target_service = episode["root_cause_service"]
@@ -78,9 +78,9 @@ def build_training_rows(episode):
 
 
 def compute_feature_distribution(feature_rows):
-    """Summarizes each feature's spread in the training data as
-    (p10, p50, p90) -- the same three quantiles used later to check for
-    drift in live traffic."""
+    """Records the spread of each feature in the training data as three
+    markers: p10, p50, p90 (the values 10%, 50% and 90% of the way up). Drift
+    checks compare live data against these."""
     distribution = {}
     for index, name in enumerate(FEATURE_NAMES):
         values = sorted(row[index] for row in feature_rows)
@@ -100,15 +100,15 @@ def _percentile(sorted_values, fraction):
 
 
 class DriftMonitor:
-    """Compares live feature values against the training distribution using
-    PSI (Population Stability Index): split each feature's range into 4
-    buckets using the training p10/p50/p90 as edges, then compare how often
-    live values land in each bucket versus how often training values did.
-    A big mismatch means the live data no longer looks like what the model
-    was trained on."""
+    """Checks whether live data still looks like the training data.
+
+    For each feature, the training p10/p50/p90 split the number line into 4
+    buckets. In training, about 10%/40%/40%/10% of values fall in them. We
+    count where live values fall and compare. A big mismatch (a high PSI
+    score) means the world has changed since the model was trained."""
 
     EXPECTED_BUCKET_SHARE = [0.10, 0.40, 0.40, 0.10]
-    WINDOW_SIZE = 200  # compare against recent traffic, not everything ever seen
+    WINDOW_SIZE = 200  # only the most recent values count
 
     def __init__(self, training_distribution):
         self.training_distribution = training_distribution
@@ -139,7 +139,7 @@ class DriftMonitor:
     def _psi_for(self, feature_name):
         values = self.observed_values[feature_name]
         if len(values) < 10:
-            return 0.0  # not enough live data yet to say anything meaningful
+            return 0.0  # too little live data to judge
 
         edges = self.training_distribution[feature_name]
         bucket_edges = [edges["p10"], edges["p50"], edges["p90"]]
@@ -147,7 +147,7 @@ class DriftMonitor:
 
         psi = 0.0
         for actual, expected in zip(actual_share, self.EXPECTED_BUCKET_SHARE):
-            if actual > 0:  # an empty bucket contributes nothing
+            if actual > 0:  # an empty bucket adds nothing (and log(0) would crash)
                 psi += (actual - expected) * math.log(actual / expected)
         return psi
 
@@ -167,10 +167,9 @@ class DriftMonitor:
 
 
 class FailureDetector:
-    """Loads the trained gradient boosting model and scores live feature
-    vectors. Runs in shadow mode: its predictions are recorded and compared
-    against what actually happens, but the deterministic engine is always
-    the one acting on the data."""
+    """Wraps the trained model. Give it an event's 4 numbers and it returns a
+    risk score between 0 and 1. Shadow mode: the score is recorded, never
+    acted on."""
 
     def __init__(self, model, training_distribution):
         self.model = model
@@ -178,6 +177,7 @@ class FailureDetector:
 
     @classmethod
     def load(cls, model_path, distribution_path):
+        # Returns None if train.py hasn't been run yet, so the API still works without a model.
         if not model_path.exists() or not distribution_path.exists():
             return None
         model = joblib.load(model_path)
@@ -185,9 +185,6 @@ class FailureDetector:
         return cls(model, training_distribution)
 
     def predict_risk(self, features):
+        # Also feeds the drift monitor, so every score doubles as a drift sample.
         self.drift_monitor.observe(features)
-        probability = self.model.predict_proba([features])[0][1]
-        return probability
-
-    def is_high_risk(self, features):
-        return self.predict_risk(features) >= RISK_THRESHOLD
+        return self.model.predict_proba([features])[0][1]

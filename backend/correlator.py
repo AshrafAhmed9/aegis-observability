@@ -1,31 +1,32 @@
 """
-Buffers events per trace_id until a trace is safe to consider complete, then
-hands it off as one time-sorted list.
+Collects events into one bucket per trace_id, and decides when a bucket is
+complete so it can be handed on as a single, time-sorted list.
 
-Events can arrive out of order, so we track a "watermark": the newest event
-time seen so far, minus a grace period. The watermark only moves forward.
-Once it has passed a trace's last event by enough, we know that trace is
-done and seal it.
+The hard part: nothing tells us a trace is finished. Services just stop
+logging. And events can arrive out of order. So we keep a "watermark", which
+is a position on the events' own timeline: the newest event time seen so far
+minus a small cushion. It only ever moves forward. Once the watermark is well
+past a trace's newest event, that trace is done and we close it.
 
-The watermark only advances when a new event arrives, so an isolated trace
-with no further traffic behind it would never close on event-time alone.
-close_wall_idle_traces() covers that: it closes a trace once real (wall
-clock) time has passed since we last touched it, regardless of the
-synthetic event timestamps.
+The watermark only moves when a new event arrives. If the last trace has no
+traffic behind it, the watermark freezes and that trace would stay open
+forever. So there is a backup rule: close a trace after enough real
+(wall-clock) seconds of silence.
 """
 
 import time
 
-WATERMARK_GRACE_SECONDS = 10   # cushion before trusting the newest event time
-IDLE_GAP_SECONDS = 15          # close a trace once the watermark passes it by this much
-# A full simulated episode (baseline, warning, retry backoff, cascade -- see
-# simulator.py) can span up to ~280s. This must stay comfortably above that,
-# or the safety net fires mid-episode and cuts off events still to come.
-MAX_TRACE_SECONDS = 320        # safety net: close a trace after this long regardless
-WALL_IDLE_SECONDS = 10         # close a trace after this many real seconds of silence
+WATERMARK_GRACE_SECONDS = 10   # how far the watermark trails the newest event, to allow for late arrivals
+IDLE_GAP_SECONDS = 15          # close a trace once the watermark is this far past its newest event
+# A simulated episode lasts up to about 280s (see simulator.py). Keep this
+# above that, or traces get cut off before the last events arrive.
+MAX_TRACE_SECONDS = 320        # safety net: close any trace this long, no matter what
+WALL_IDLE_SECONDS = 10         # backup rule: close a trace after this many real seconds of silence
 
 
 class TraceBuffer:
+    """All the events seen so far for one trace, plus when the first and last happened."""
+
     def __init__(self):
         self.events = []
         self.first_event_time = None
@@ -43,6 +44,8 @@ class TraceBuffer:
 
 
 class Correlator:
+    """Holds every open trace and closes them when they are done."""
+
     def __init__(self):
         self.open_traces = {}
         self.closed_trace_ids = set()
@@ -51,7 +54,7 @@ class Correlator:
     def add_event(self, event):
         trace_id = event["trace_id"]
         if trace_id in self.closed_trace_ids:
-            # Trace already sealed; this event is too late to include.
+            # This trace was already closed, so the event is too late. Drop it.
             return
 
         if trace_id not in self.open_traces:
@@ -61,13 +64,14 @@ class Correlator:
         self._advance_watermark(event["timestamp"])
 
     def _advance_watermark(self, event_timestamp):
+        # Never move backwards: a late, old event must not undo progress.
         candidate = event_timestamp - WATERMARK_GRACE_SECONDS
         if candidate > self.watermark:
             self.watermark = candidate
 
     def close_finished_traces(self):
-        """Returns sealed traces (each a time-sorted list of events) for
-        every open trace that's now finished."""
+        """Closes every trace that is finished. Returns them as a list of
+        time-sorted event lists."""
         sealed = []
         for trace_id in list(self.open_traces.keys()):
             buffer = self.open_traces[trace_id]
@@ -76,7 +80,9 @@ class Correlator:
         return sealed
 
     def _is_finished(self, buffer):
+        # Rule 1: the timeline has moved on well past this trace's last event.
         idle_time = self.watermark - buffer.last_event_time
+        # Rule 2: this trace has gone on too long (stops it growing forever).
         trace_age = buffer.last_event_time - buffer.first_event_time
         return idle_time >= IDLE_GAP_SECONDS or trace_age >= MAX_TRACE_SECONDS
 
@@ -86,14 +92,14 @@ class Correlator:
         return sorted(buffer.events, key=lambda event: event["timestamp"])
 
     def flush_all(self):
-        """Force-closes every remaining open trace, e.g. at shutdown."""
+        """Closes every open trace right now, finished or not."""
         remaining_ids = list(self.open_traces.keys())
         return [self._seal(trace_id) for trace_id in remaining_ids]
 
     def close_wall_idle_traces(self):
-        """Closes any trace that hasn't received a new event in the last
-        WALL_IDLE_SECONDS of real time -- the fallback for a trace with no
-        later traffic to advance the event-time watermark past it."""
+        """Backup rule: closes traces that have received nothing for
+        WALL_IDLE_SECONDS of real time, for when no new events are coming to
+        move the watermark."""
         sealed = []
         now = time.monotonic()
         for trace_id in list(self.open_traces.keys()):

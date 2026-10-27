@@ -91,25 +91,18 @@ def test_predict_risk_returns_a_probability():
     assert 0.0 <= risk <= 1.0
 
 
-def test_is_high_risk_matches_the_threshold():
-    detector, _ = _train_tiny_detector()
-    features = [1, 0, 5.0, 0]
-    risk = detector.predict_risk(features)
-    assert detector.is_high_risk(features) == (risk >= ml.RISK_THRESHOLD)
-
-
 def test_trained_model_flags_a_clear_warning_as_high_risk():
     detector, _ = _train_tiny_detector()
     # The gap since this service's last event is what marks a WARNING moment
     # -- warning_count itself is always 0 here, since a row is built from
     # events *before* the one being classified (see extract_features).
-    assert detector.is_high_risk([0, 0, 20.0, 0])
+    assert detector.predict_risk([0, 0, 20.0, 0]) >= ml.RISK_THRESHOLD
 
 
 def test_trained_model_does_not_flag_healthy_baseline_traffic():
     detector, _ = _train_tiny_detector()
     # A short, regular gap between events -- typical of routine baseline traffic.
-    assert not detector.is_high_risk([0, 0, 5.0, 0])
+    assert detector.predict_risk([0, 0, 5.0, 0]) < ml.RISK_THRESHOLD
 
 
 def test_median_helper_handles_odd_and_even_length_lists():

@@ -1,15 +1,14 @@
 # Aegis — AI-Native Incident Correlation & Observability Platform
 
-> **Streaming telemetry correlation engine with event-time watermarks, topological root-cause analysis, a self-training ML lifecycle, and LLM-augmented diagnostics for distributed systems.**
+> **Streaming telemetry correlation engine with event-time watermarks, topological root-cause analysis, and a shadow-mode failure predictor for distributed systems.**
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776ab?style=flat&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-18-61dafb?style=flat&logo=react&logoColor=white)](https://react.dev)
 [![scikit--learn](https://img.shields.io/badge/scikit--learn-1.5-f7931e?style=flat&logo=scikitlearn&logoColor=white)](https://scikit-learn.org)
 [![Kafka](https://img.shields.io/badge/Kafka-KRaft-231f20?style=flat&logo=apachekafka&logoColor=white)](https://kafka.apache.org)
 [![Prometheus](https://img.shields.io/badge/Prometheus-Instrumented-e6522c?style=flat&logo=prometheus&logoColor=white)](https://prometheus.io)
 [![Grafana](https://img.shields.io/badge/Grafana-Dashboard-f46800?style=flat&logo=grafana&logoColor=white)](https://grafana.com)
-[![Tests](https://img.shields.io/badge/Tests-69%20passing-brightgreen?style=flat)]()
+[![Tests](https://img.shields.io/badge/Tests-65%20passing-brightgreen?style=flat)]()
 [![CI](https://github.com/AshrafAhmed9/aegis-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/AshrafAhmed9/aegis-observability/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -50,22 +49,19 @@ flowchart LR
 cause. A topological sort (Kahn's algorithm) generalises this to arbitrarily deep dependency
 chains, and it's **correct on all 78 incidents in the evaluation set**.
 
-Everything else in the project exists to build that graph, read it, or explain what it found.
+Everything else in the project exists to build that graph, read it, or warn before it forms.
 
-## Why the AI doesn't decide anything
+## Why the ML model doesn't decide anything
 
-There is a gradient-boosting model here and a large language model, and **neither is permitted
-to choose the root cause.** The graph chooses it.
+There is a gradient-boosting model here, and **it is not permitted to choose the root cause.**
+The graph chooses it.
 
-- The **ML model** runs in shadow mode, predicting which service is about to fail. Its scores
-  are recorded and evaluated, never acted upon.
-- The **LLM** is handed the root cause the graph already found and asked to write it up
-  readably. It narrates a decision; it doesn't make one.
+The model runs in shadow mode, predicting which service is about to fail. Its scores are
+recorded and evaluated, never acted upon.
 
 That boundary is deliberate. The deterministic engine is verifiable against known ground truth,
-78 times out of 78. The models are not. Information flows *into* the advisory layer and never
-back out into the decision, so the worst either model can do is be unhelpful. If the LLM is
-unreachable, the diagnosis is identical and only the prose gets plainer.
+78 times out of 78. The model is not. Information flows *into* the advisory layer and never back
+out into the decision, so the worst the model can do is be unhelpful.
 
 ---
 
@@ -80,8 +76,8 @@ flowchart TD
     KAFKA{{"Kafka · topic: telemetry.raw"}}
     STR["② STREAM &nbsp;·&nbsp; the only stateful layer<br/><b>correlator.py</b><br/><i>buffers per trace, closes on event-time watermarks</i>"]
     DEC["③ DECISION &nbsp;·&nbsp; system of record<br/><b>rca.py</b><br/><i>dependency graph + Kahn's sort → root cause</i>"]
-    ADV["④ ADVISORY &nbsp;·&nbsp; no authority over the diagnosis<br/><b>ml.py</b> risk scoring &amp; drift &nbsp;|&nbsp; <b>warroom.py</b> 6 artifacts"]
-    SRV["⑤ SERVING<br/><b>main.py</b> + React console"]
+    ADV["④ ADVISORY &nbsp;·&nbsp; no authority over the diagnosis<br/><b>ml.py</b> risk scoring &amp; drift"]
+    SRV["⑤ SERVING<br/><b>main.py</b> · FastAPI + Prometheus metrics"]
 
     ING --> KAFKA --> STR
     STR -->|one sealed trace| DEC
@@ -123,12 +119,11 @@ is the weaker path and is labelled as such.
 service has been silent: a healthy one checks in every five seconds, a struggling one goes quiet.
 Features come only from prior events, so no future information leaks into training. A PSI drift
 monitor over a rolling window reports whether live traffic still resembles what the model learned
-from. `warroom.py` writes six artifacts per incident: summary, timeline, Mermaid dependency
-graph, postmortem, raw telemetry CSV, and a suggested patch.
+from.
 
 **Serving.** `main.py` exposes the API and runs two background tasks: the Kafka consumer, and a
-loop that closes traces gone quiet in real time. The React console polls for incidents and live
-shadow predictions.
+loop that closes traces gone quiet in real time. `/incidents` returns the root-cause results,
+`/predictions` the live shadow scores, and `/metrics` feeds Prometheus.
 
 ---
 
@@ -141,7 +136,7 @@ Every number below is recomputed from scratch on each run, and re-verified by CI
 | Root-cause accuracy | **78 / 78** | 26 episodes × 3 fault types, run blind through the real pipeline |
 | Median early warning | **193.4s** | First high-risk prediction → actual failure, across 18 held-out episodes |
 | Prediction recall | **18 / 18** | Held-out episodes where the model raised an alarm before failure |
-| Test suite | **69 passing** | Correlation, RCA, prediction, drift, simulation |
+| Test suite | **65 passing** | Correlation, RCA, prediction, drift, simulation |
 
 ```bash
 cd backend
@@ -170,20 +165,19 @@ cd aegis-observability/backend
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # optional: without a Groq key, reports fall back to deterministic
 python train.py
 uvicorn main:app --port 8010
 ```
 
-Frontend, in a second terminal:
+Inject a fault and read the result:
 
 ```bash
-cd frontend && npm install && npm run dev
+curl -X POST http://127.0.0.1:8010/simulate/redis_leak
+curl http://127.0.0.1:8010/incidents      # a few seconds later
 ```
 
-Click a fault button to inject a failure and watch it resolve into an incident. Once dependencies
-are installed, **`./demo.sh`** does all of the above in one command: infrastructure, both
-servers, and an injected fault so the console isn't empty.
+Once dependencies are installed, **`./demo.sh`** does all of the above in one command: Kafka,
+Prometheus, Grafana, the API, and an injected fault.
 
 ### Full stack
 
@@ -208,19 +202,16 @@ backend/
   correlator.py      event-time watermark buffering
   rca.py             dependency graph + Kahn's topological sort
   ml.py              feature extraction, GBM shadow detector, PSI drift
-  warroom.py         6-artifact incident reports (Groq + fallback)
   kafka_io.py        Kafka producer/consumer
   main.py            FastAPI app, background tasks, Prometheus metrics
   train.py           trains the model on simulator-generated data
   run_eval.py        78-episode correctness + lead-time evaluation
-  tests/             69 tests
+  tests/             65 tests
   observability/     Prometheus + Grafana provisioning
-frontend/
-  src/App.jsx        single-page console
 ```
 
 ```bash
-cd backend && pytest      # 69 tests, runs in about a second
+cd backend && pytest      # 65 tests, runs in about a second
 ```
 
 Tests are fast because event timestamps are plain numbers rather than wall-clock time. A test

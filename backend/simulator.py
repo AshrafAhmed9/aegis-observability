@@ -1,18 +1,20 @@
 """
-Synthetic telemetry generator for a small service fleet (api, cache, queue,
-database). Produces fault episodes with a known root cause, used both for
-live demo traffic and for grading the correlation engine (see run_eval.py).
+Makes up fake telemetry for four services (api, cache, queue, database).
 
-Timestamps are plain seconds counting up from 0, not wall-clock time -- enough
-to exercise event-time watermarks without real delays.
+Each "episode" is one outage where we choose which service breaks, so the
+right answer is known. That lets us (a) feed demo traffic to the API,
+(b) train the ML model, and (c) grade the root-cause engine (run_eval.py).
+
+Timestamps are plain seconds counting up from 0, not real clock time, so
+tests and evaluation run instantly.
 """
 
 import random
 
 SERVICES = ["api", "cache", "queue", "database"]
 
-# Each fault names the service that fails first (the "target") and the error
-# it logs, plus the downstream error the api service logs as a result.
+# Each fault names the service that breaks first (the "target"), the error it
+# logs, and the error that the api logs afterwards as a result.
 FAULT_TYPES = {
     "redis_leak": {
         "target": "cache",
@@ -31,14 +33,12 @@ FAULT_TYPES = {
     },
 }
 
-# A struggling service logs one WARNING, then keeps retrying with backoff
-# before it finally gives up and logs the ERROR. This mirrors a real
-# reconnection-storm: a handful of retries at growing intervals. The total
-# backoff time (plus some jitter) is the gap ml.py's model has to predict
-# across -- whatever lead time that produces gets measured honestly by
-# run_eval.py, not targeted in advance.
-RETRY_BACKOFF_STEPS_SECONDS = [15, 30, 60, 60]  # 4 retries: 15s, 30s, 60s, 60s apart
-BACKOFF_JITTER_SECONDS = 15
+# A struggling service logs one WARNING, then retries with longer and longer
+# waits before it finally gives up and logs the ERROR. That gap is the
+# warning time the ML model has to work with. We just measure whatever lead
+# time comes out (run_eval.py); we don't aim for a number.
+RETRY_BACKOFF_STEPS_SECONDS = [15, 30, 60, 60]  # seconds waited before each retry
+BACKOFF_JITTER_SECONDS = 15  # up to this much random extra wait per retry
 
 
 def make_event(trace_id, span_id, parent_span_id, service, timestamp, severity, error_class=None):
@@ -54,7 +54,7 @@ def make_event(trace_id, span_id, parent_span_id, service, timestamp, severity, 
 
 
 class SpanCounter:
-    """Issues unique span ids within one episode."""
+    """Hands out span ids (span-1, span-2, ...) that are unique within one episode."""
 
     def __init__(self):
         self.count = 0
@@ -65,7 +65,7 @@ class SpanCounter:
 
 
 def _emit_baseline_traffic(events, spans, trace_id, start_time):
-    # Healthy traffic before the fault, so an episode isn't errors-only.
+    # Three rounds of normal INFO events from every service, 5s apart.
     t = start_time
     for _ in range(3):
         for service in SERVICES:
@@ -75,9 +75,8 @@ def _emit_baseline_traffic(events, spans, trace_id, start_time):
 
 
 def _emit_target_breaking(events, spans, trace_id, start_time, fault, rng):
-    # First WARNING fires immediately -- that's the earliest signal a
-    # predictor could act on. The service then retries with backoff
-    # (RETRY_BACKOFF_STEPS_SECONDS) before finally logging the ERROR.
+    # The target logs a WARNING first. That is the earliest sign of trouble.
+    # It then retries with growing waits before finally logging the ERROR.
     warning_time = start_time + 15.0
     warning_span = spans.next()
     events.append(make_event(trace_id, warning_span, None, fault["target"], warning_time, "WARNING"))
@@ -94,8 +93,8 @@ def _emit_target_breaking(events, spans, trace_id, start_time, fault, rng):
 
 
 def _emit_cascade_failure(events, spans, trace_id, start_time, parent_span_id, fault):
-    # parent_span_id ties these events to the target's failure, giving rca.py
-    # a real cause -> effect edge rather than two unrelated failures.
+    # The api fails because the target failed. parent_span_id records that
+    # link, which gives rca.py its cause -> effect arrow.
     t = start_time
     for _ in range(4):
         t += 5.0
@@ -106,9 +105,9 @@ def _emit_cascade_failure(events, spans, trace_id, start_time, parent_span_id, f
 
 
 def generate_episode(seed, fault_name):
-    """Returns (events, root_cause_service, warning_time, failure_time).
-    root_cause_service is the ground truth for RCA grading; warning_time and
-    failure_time are the ground truth for lead-time measurement."""
+    """Builds one outage. Returns (events, root_cause_service, warning_time,
+    failure_time). The last three are the known right answers, used for
+    grading. The same seed always gives the same episode."""
     rng = random.Random(seed)
     fault = FAULT_TYPES[fault_name]
     trace_id = f"{fault_name}-{seed}"
@@ -123,8 +122,8 @@ def generate_episode(seed, fault_name):
 
 
 def generate_episodes(episodes_per_fault=26):
-    """episodes_per_fault=26 across 3 fault types yields 78 labeled episodes --
-    the exact set run_eval.py scores the correlation engine against."""
+    """Builds episodes_per_fault outages of each fault type. The default of 26
+    gives 3 x 26 = 78 episodes, the set run_eval.py grades."""
     episodes = []
     seed = 0
     for fault_name in FAULT_TYPES:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# One-command interview demo: brings up Kafka/Prometheus/Grafana, the API,
-# and the frontend, then injects a fault so there's something on screen
-# immediately. Ctrl+C tears everything down.
+# One-command demo: brings up Kafka/Prometheus/Grafana and the API, then
+# injects a fault so there's an incident to look at immediately. Ctrl+C
+# tears everything down.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -40,34 +40,31 @@ echo "==> Starting backend (uvicorn on :8010)..."
 ) &
 PIDS+=($!)
 
-echo "==> Starting frontend (vite on :5173)..."
-(
-    cd frontend
-    npm run dev > /tmp/aegis-frontend.log 2>&1
-) &
-PIDS+=($!)
-
 echo "==> Waiting for backend to be ready..."
 until curl -s http://127.0.0.1:8010/health >/dev/null 2>&1; do
     sleep 1
 done
 
-echo "==> Injecting a fault so an incident is already on screen..."
+echo "==> Injecting a fault..."
 curl -s -X POST http://127.0.0.1:8010/simulate/redis_leak >/dev/null
 
-echo "==> Opening the console..."
-sleep 2
-open http://localhost:5173 2>/dev/null || xdg-open http://localhost:5173 2>/dev/null || true
+echo "==> Waiting for the incident to close (a few seconds after the trace goes quiet)..."
+until [ "$(curl -s http://127.0.0.1:8010/incidents)" != "[]" ]; do
+    sleep 2
+done
+echo "==> Root cause found:"
+curl -s http://127.0.0.1:8010/incidents
+echo
 
 cat <<'EOF'
 
 Aegis is live:
-  Frontend    http://localhost:5173
+  Incidents   http://127.0.0.1:8010/incidents
   API docs    http://127.0.0.1:8010/docs
   Grafana     http://localhost:3000  (admin / aegis)
   Prometheus  http://localhost:9091
 
-Inject more faults from the console buttons, or:
+Inject more faults:
   curl -X POST http://127.0.0.1:8010/simulate/queue_backlog
   curl -X POST http://127.0.0.1:8010/simulate/deadlock_burst
 

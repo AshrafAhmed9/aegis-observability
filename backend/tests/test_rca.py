@@ -33,19 +33,19 @@ def test_build_graph_no_self_edge_same_service():
 
 
 def test_rank_root_causes_single_degraded_service():
-    nodes = {"api": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0}}
+    nodes = {"api": {"max_severity": "ERROR", "first_error_time": 0}}
     assert rca.rank_root_causes(nodes, set()) == ["api"]
 
 
 def test_rank_root_causes_no_degraded_services():
-    nodes = {"api": {"max_severity": "INFO", "error_classes": set(), "first_error_time": None}}
+    nodes = {"api": {"max_severity": "INFO", "first_error_time": None}}
     assert rca.rank_root_causes(nodes, set()) == []
 
 
 def test_rank_root_causes_orders_cause_before_effect():
     nodes = {
-        "cache": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0},
-        "api": {"max_severity": "CRITICAL", "error_classes": set(), "first_error_time": 5},
+        "cache": {"max_severity": "ERROR", "first_error_time": 0},
+        "api": {"max_severity": "CRITICAL", "first_error_time": 5},
     }
     edges = {("cache", "api")}
     ranked = rca.rank_root_causes(nodes, edges)
@@ -54,8 +54,8 @@ def test_rank_root_causes_orders_cause_before_effect():
 
 def test_rank_root_causes_falls_back_to_earliest_error_without_edges():
     nodes = {
-        "cache": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 10},
-        "queue": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 2},
+        "cache": {"max_severity": "ERROR", "first_error_time": 10},
+        "queue": {"max_severity": "ERROR", "first_error_time": 2},
     }
     ranked = rca.rank_root_causes(nodes, set())
     assert ranked[0] == "queue"
@@ -63,24 +63,12 @@ def test_rank_root_causes_falls_back_to_earliest_error_without_edges():
 
 def test_rank_root_causes_handles_a_two_node_cycle():
     nodes = {
-        "a": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 0},
-        "b": {"max_severity": "ERROR", "error_classes": set(), "first_error_time": 1},
+        "a": {"max_severity": "ERROR", "first_error_time": 0},
+        "b": {"max_severity": "ERROR", "first_error_time": 1},
     }
     edges = {("a", "b"), ("b", "a")}
     ranked = rca.rank_root_causes(nodes, edges)
     assert set(ranked) == {"a", "b"}
-
-
-def test_classify_error_type_deadlock():
-    assert rca.classify_error_type({"postgres.deadlock"}) == "deadlock"
-
-
-def test_classify_error_type_resource_exhaustion():
-    assert rca.classify_error_type({"redis.exceptions.ConnectionError"}) == "resource_exhaustion"
-
-
-def test_classify_error_type_unknown_defaults_to_failure():
-    assert rca.classify_error_type({"some.other.Error"}) == "failure"
 
 
 def _run_through_pipeline(events):

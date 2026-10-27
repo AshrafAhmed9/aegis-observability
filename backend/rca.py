@@ -1,41 +1,39 @@
 """
-Given a sealed trace (events from possibly several services), determines
-which service failed first and caused the others to fail.
+Root-cause analysis: given all the events of one request (a "trace"), work out
+which service broke first and caused the others to fail.
 
-Two steps:
-1. Build a graph: one node per service, one edge (cause -> effect) whenever
-   an event's parent_span_id points at another service's event.
-2. Topologically sort that graph with Kahn's algorithm: repeatedly remove
-   nodes with no incoming edges. Whatever comes out first has nothing
-   causing it -- that's the root cause.
+How it works, in two steps:
+1. Draw a graph. Each service is a dot. If an event says "I only happened
+   because that other service's event happened" (its parent_span_id), draw an
+   arrow from the cause to the effect.
+2. Find the dot with no arrows pointing into it. Nothing caused it, so it is
+   the root cause. Kahn's algorithm does this by repeatedly taking out dots
+   that have no incoming arrows.
 """
 
+# Higher number = worse. Used to compare severities.
 SEVERITY_RANK = {"INFO": 0, "WARNING": 1, "ERROR": 2, "CRITICAL": 3}
-
-ERROR_TYPE_KEYWORDS = {
-    "deadlock": "deadlock",
-    "connectionerror": "resource_exhaustion",
-    "workerlost": "resource_exhaustion",
-    "timeout": "timeout",
-}
 
 
 def _is_degraded(node):
+    """A service counts as failed if its worst event was ERROR or CRITICAL."""
     return SEVERITY_RANK[node["max_severity"]] >= SEVERITY_RANK["ERROR"]
 
 
 def build_graph(events):
     """Returns (nodes, edges).
-    nodes: service -> {max_severity, error_classes, first_error_time}
+    nodes: service name -> {max_severity, first_error_time}
     edges: set of (cause_service, effect_service) pairs
     """
     nodes = {}
     for event in events:
         service = event["service"]
         if service not in nodes:
-            nodes[service] = {"max_severity": "INFO", "error_classes": set(), "first_error_time": None}
+            nodes[service] = {"max_severity": "INFO", "first_error_time": None}
         _update_node(nodes[service], event)
 
+    # A parent_span_id is just an id like "span-14", so first build a lookup
+    # from span id to the service that owns it.
     span_to_service = {event["span_id"]: event["service"] for event in events}
     edges = _build_edges(events, span_to_service)
 
@@ -43,16 +41,17 @@ def build_graph(events):
 
 
 def _update_node(node, event):
+    """Folds one event into its service's summary."""
     severity = event["severity"]
     if SEVERITY_RANK[severity] > SEVERITY_RANK[node["max_severity"]]:
         node["max_severity"] = severity
-    if event.get("error_class"):
-        node["error_classes"].add(event["error_class"])
     if severity in ("ERROR", "CRITICAL") and node["first_error_time"] is None:
         node["first_error_time"] = event["timestamp"]
 
 
 def _build_edges(events, span_to_service):
+    """One arrow (cause -> effect) for every event whose parent belongs to a
+    different service."""
     edges = set()
     for event in events:
         parent_span_id = event.get("parent_span_id")
@@ -66,22 +65,25 @@ def _build_edges(events, span_to_service):
 
 
 def rank_root_causes(nodes, edges):
-    """Ranks failed services from most-likely-root-cause to most-likely-symptom."""
+    """Lists the failed services, most likely root cause first."""
     degraded = [service for service, node in nodes.items() if _is_degraded(node)]
 
     if len(degraded) <= 1:
         return degraded
 
+    # Only arrows between two failed services help explain the failure.
     relevant_edges = [(cause, effect) for cause, effect in edges if cause in degraded and effect in degraded]
 
     if not relevant_edges:
-        # No causal link between the failures -- best guess is whichever failed first.
+        # No link between the failures, so the best guess is whoever failed first.
         return sorted(degraded, key=lambda service: nodes[service]["first_error_time"] or float("inf"))
 
     return _kahn_topological_order(degraded, relevant_edges)
 
 
 def _kahn_topological_order(degraded, relevant_edges):
+    """Kahn's algorithm. "in_degree" is how many arrows point into a service.
+    Services with 0 come out first, because nothing caused them."""
     in_degree = {service: 0 for service in degraded}
     effects_of = {service: [] for service in degraded}
     for cause, effect in relevant_edges:
@@ -91,33 +93,26 @@ def _kahn_topological_order(degraded, relevant_edges):
     ordered = []
     queue = sorted(service for service in degraded if in_degree[service] == 0)
     while queue:
-        queue.sort()  # deterministic pick when several nodes are ready at once
+        queue.sort()  # alphabetical, so ties always resolve the same way
         current = queue.pop(0)
         ordered.append(current)
+        # Remove this service's arrows. Anything left with none pointing at
+        # it is now free to come out.
         for effect in effects_of[current]:
             in_degree[effect] -= 1
             if in_degree[effect] == 0:
                 queue.append(effect)
 
-    # A node that never reaches in-degree 0 is in a cycle (A caused B, B
-    # caused A) -- order between cycle members is undecidable, so they're
-    # all treated as root causes.
+    # Services that never reached 0 are stuck in a loop (A caused B and B
+    # caused A). There is no way to say which came first, so all of them are
+    # reported as root causes.
     leftover = sorted(service for service in degraded if service not in ordered)
     return leftover + ordered
 
 
-def classify_error_type(error_classes):
-    combined_text = " ".join(error_classes).lower()
-    for keyword, error_type in ERROR_TYPE_KEYWORDS.items():
-        if keyword in combined_text:
-            return error_type
-    return "failure"
-
-
 def analyze(events):
-    # ranked_root_causes holds exactly the degraded services, ordered from
-    # most-likely-cause to most-likely-symptom -- so an empty list also
-    # means "nothing failed in this trace".
+    """Main entry point. An empty ranked_root_causes list means nothing
+    failed in this trace."""
     nodes, edges = build_graph(events)
     return {
         "nodes": nodes,

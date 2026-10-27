@@ -1,8 +1,8 @@
 """
-Trains the gradient boosting failure detector on simulator-generated
-episodes -- this is the "self-training" step: Aegis generates its own
-labeled data (see simulator.py) and learns from it, no manually collected
-dataset required.
+Trains the failure-prediction model.
+
+There is no dataset to download. simulator.py makes outages where the answer
+is known, and the model learns from those.
 
 Run with: python train.py
 """
@@ -21,13 +21,12 @@ MODEL_PATH = ARTIFACTS_DIR / "model.joblib"
 DISTRIBUTION_PATH = ARTIFACTS_DIR / "feature_distribution.json"
 
 EPISODES_PER_FAULT = 26
-TRAIN_EPISODES_PER_FAULT = 20   # the remaining 6 per fault are held out for validation
+TRAIN_EPISODES_PER_FAULT = 20   # the other 6 per fault are held back to test on
 
 
 def split_episodes():
-    """Splits by whole episode, never by row -- so validation episodes are
-    ones the model has never seen anything from, not just unseen rows
-    within an episode it already trained on."""
+    """Splits into training and held-out episodes. The split is by whole
+    episode, so the held-out ones are completely new to the model."""
     all_episodes = simulator.generate_episodes(episodes_per_fault=EPISODES_PER_FAULT)
     train_episodes, val_episodes = [], []
     counts_seen = {}
@@ -42,6 +41,7 @@ def split_episodes():
 
 
 def rows_for_episodes(episodes):
+    """All the training examples from a list of episodes."""
     rows = []
     for episode in episodes:
         rows.extend(ml.build_training_rows(episode))
@@ -49,6 +49,7 @@ def rows_for_episodes(episodes):
 
 
 def train_model(train_rows):
+    """Fits the gradient-boosting model on (numbers, label) examples."""
     X = [features for features, _ in train_rows]
     y = [label for _, label in train_rows]
     model = HistGradientBoostingClassifier(max_depth=3, learning_rate=0.1, max_iter=100, random_state=42)
@@ -57,9 +58,10 @@ def train_model(train_rows):
 
 
 def measure_lead_times(model, val_episodes):
-    """For each held-out episode, replays events in time order and records
-    the first moment the model predicts high risk for the target service,
-    then compares that to when the target actually failed."""
+    """How early does the model warn? For each held-out episode, replay the
+    events in order and note when the model flags the failing service as high
+    risk. Lead time = actual failure time minus that moment. Episodes the
+    model never flags are left out."""
     leads = []
     for episode in val_episodes:
         events = sorted(episode["events"], key=lambda e: e["timestamp"])
@@ -82,6 +84,7 @@ def measure_lead_times(model, val_episodes):
 
 
 def median(values):
+    """Middle value of a list, or None if it is empty."""
     if not values:
         return None
     ordered = sorted(values)
@@ -91,20 +94,23 @@ def median(values):
     return (ordered[mid - 1] + ordered[mid]) / 2
 
 
+def describe_lead_time(leads, total_episodes):
+    """One line summarizing the early-warning result (also used by run_eval.py)."""
+    if not leads:
+        return f"Median early-warning lead time: n/a (0/{total_episodes} caught)"
+    return f"Median early-warning lead time: {median(leads):.1f}s ({len(leads)}/{total_episodes} caught)"
+
+
 def main():
     train_episodes, val_episodes = split_episodes()
     train_rows = rows_for_episodes(train_episodes)
 
     model = train_model(train_rows)
     leads = measure_lead_times(model, val_episodes)
-    median_lead = median(leads)
 
     print(f"Trained on {len(train_rows)} rows from {len(train_episodes)} episodes")
     print(f"Validated on {len(val_episodes)} unseen episodes")
-    if median_lead is None:
-        print(f"Median early-warning lead time: n/a (0/{len(val_episodes)} caught)")
-    else:
-        print(f"Median early-warning lead time: {median_lead:.1f}s ({len(leads)}/{len(val_episodes)} caught)")
+    print(describe_lead_time(leads, len(val_episodes)))
 
     ARTIFACTS_DIR.mkdir(exist_ok=True)
     joblib.dump(model, MODEL_PATH)
