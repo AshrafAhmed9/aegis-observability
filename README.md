@@ -39,7 +39,7 @@ On that graph, "which one started it" has an exact answer: **the node with no in
 
 ```mermaid
 flowchart LR
-    DB["<b>database</b><br/>1 × ERROR<br/><i>postgres.deadlock</i>"] --> API["<b>api</b><br/>4 × CRITICAL<br/><i>GatewayTimeout</i>"]
+    DB["<b>database</b><br/>1 × ERROR<br/><i>postgres.deadlock</i>"] --> API["<b>api</b><br/>4 × CRITICAL<br/><i>OperationalError</i>"]
 
     style DB fill:#7f1d1d,stroke:#ef4444,stroke-width:3px,color:#fff
     style API fill:#78350f,stroke:#f59e0b,stroke-width:2px,color:#fff
@@ -161,8 +161,11 @@ mess of real production telemetry.
 
 ```bash
 git clone https://github.com/AshrafAhmed9/aegis-observability.git
-cd aegis-observability/backend
+cd aegis-observability
 
+docker-compose up -d kafka        # the API needs Kafka running
+
+cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python train.py
@@ -176,13 +179,15 @@ curl -X POST http://127.0.0.1:8010/simulate/redis_leak
 curl http://127.0.0.1:8010/incidents      # a few seconds later
 ```
 
-Once dependencies are installed, **`./demo.sh`** does all of the above in one command: Kafka,
-Prometheus, Grafana, the API, and an injected fault.
+Once the virtualenv is set up and `train.py` has run, **`./demo.sh`** does all of the above in
+one command: Kafka, Prometheus, Grafana, the API, and an injected fault.
 
-### Full stack
+### Dashboards
+
+To also get Prometheus and Grafana, start all three instead of just Kafka:
 
 ```bash
-docker-compose up kafka prometheus grafana
+docker-compose up -d kafka prometheus grafana
 ```
 
 | Service | URL |
