@@ -45,13 +45,21 @@ until curl -s http://127.0.0.1:8010/health >/dev/null 2>&1; do
     sleep 1
 done
 
-echo "==> Injecting a fault..."
-curl -s -X POST http://127.0.0.1:8010/simulate/redis_leak >/dev/null
-
-echo "==> Waiting for the incident to close (a few seconds after the trace goes quiet)..."
-until [ "$(curl -s http://127.0.0.1:8010/incidents)" != "[]" ]; do
-    sleep 2
+echo "==> Injecting a fault and waiting for the incident..."
+# The API can report healthy a moment before its Kafka consumer has joined,
+# and the consumer ignores events sent before it joins. So if no incident
+# shows up, inject again (up to 6 tries, about 30s each).
+for _ in 1 2 3 4 5 6; do
+    curl -s -X POST http://127.0.0.1:8010/simulate/redis_leak >/dev/null
+    for _ in $(seq 1 15); do
+        [ "$(curl -s http://127.0.0.1:8010/incidents)" != "[]" ] && break 2
+        sleep 2
+    done
 done
+if [ "$(curl -s http://127.0.0.1:8010/incidents)" = "[]" ]; then
+    echo "No incident appeared. Check /tmp/aegis-backend.log"
+    exit 1
+fi
 echo "==> Root cause found:"
 curl -s http://127.0.0.1:8010/incidents
 echo
