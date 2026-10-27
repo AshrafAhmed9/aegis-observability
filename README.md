@@ -1,4 +1,4 @@
-# Aegis — AI-Native Incident Correlation & Observability Platform
+# Aegis — Predictive Observability Platform
 
 > **Streaming telemetry correlation engine with event-time watermarks, topological root-cause analysis, and a shadow-mode failure predictor for distributed systems.**
 
