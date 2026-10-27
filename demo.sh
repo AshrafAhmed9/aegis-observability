@@ -29,7 +29,8 @@ echo "Finds the service that really caused an outage, not just the loudest one."
 echo ""
 
 echo "[1/4] Starting Kafka (event stream), Prometheus and Grafana (dashboards)..."
-if docker ps --format '{{.Names}}' | grep -q -- '-kafka-1$'; then
+# Reuse Kafka only if it is really accepting connections on its port.
+if (echo > /dev/tcp/127.0.0.1/9092) 2>/dev/null; then
     echo "      Already running, reusing them."
 else
     docker-compose up -d kafka prometheus grafana >/dev/null 2>&1
@@ -51,65 +52,105 @@ until curl -s "$API/health" >/dev/null 2>&1; do
     sleep 1
 done
 
-echo "[3/4] Simulating an outage: the 'cache' service starts failing."
-echo "      The 'api' service depends on cache, so it times out and logs far more"
-echo "      errors than cache did. This is the situation that fools a person on call."
+incident_count() {
+    curl -s "$API/incidents" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'
+}
+
+echo "[3/4] Causing three different outages, one after another."
+echo "      In each one, a service breaks and the 'api' in front of it starts failing"
+echo "      too, with more errors than the service that actually broke. That is the"
+echo "      situation that fools a person on call."
+echo ""
+echo "      Outage 1: the cache runs out of connections (redis_leak)"
 # The API can report healthy a moment before its Kafka consumer has joined,
 # and the consumer ignores events sent before it joins. So if no incident
 # shows up, inject again (up to 6 tries, about 30s each).
 for _ in 1 2 3 4 5 6; do
     curl -s -X POST "$API/simulate/redis_leak" >/dev/null
     for _ in $(seq 1 15); do
-        [ "$(curl -s "$API/incidents")" != "[]" ] && break 2
+        [ "$(incident_count)" -ge 1 ] && break 2
         sleep 2
     done
 done
-if [ "$(curl -s "$API/incidents")" = "[]" ]; then
+if [ "$(incident_count)" -lt 1 ]; then
     echo "No incident appeared. Check /tmp/aegis-backend.log"
     exit 1
 fi
 
-echo "[4/4] Aegis analyzed the events. Result:"
+echo "      Outage 2: the queue's background workers crash (queue_backlog)"
+curl -s -X POST "$API/simulate/queue_backlog" >/dev/null
+echo "      Outage 3: the database deadlocks (deadlock_burst)"
+curl -s -X POST "$API/simulate/deadlock_burst" >/dev/null
+
+echo "      Waiting for Aegis to finish analyzing them (a few seconds each)..."
+for _ in $(seq 1 40); do
+    [ "$(incident_count)" -ge 3 ] && break
+    sleep 2
+done
+if [ "$(incident_count)" -lt 3 ]; then
+    echo "Only $(incident_count) of 3 incidents appeared. Check /tmp/aegis-backend.log"
+    exit 1
+fi
+
+echo "[4/4] Results. Aegis is never told which service we broke."
 echo ""
-# Turns the JSON answer into a short readable summary.
-curl -s "$API/incidents" | python3 -c '
-import json, sys
-incident = json.load(sys.stdin)[0]
-nodes, ranked = incident["nodes"], incident["ranked_root_causes"]
-causes = {effect: cause for cause, effect in incident["edges"]}
+# Turns the JSON answers into a short readable summary for each outage.
+INCIDENTS="$(curl -s "$API/incidents")" PREDICTIONS="$(curl -s "$API/predictions")" python3 - <<'PY'
+import json
+import os
 
-print("  Service    Worst log level   Verdict")
-print("  ---------  ----------------  ------------------------------------------")
-# Root cause first, then victims, then healthy services.
-order = ranked + [name for name in nodes if name not in ranked]
-for service in order:
-    node = nodes[service]
-    if service == ranked[0]:
-        verdict = "ROOT CAUSE: nothing caused this failure"
-    elif service in causes:
-        verdict = "victim: its errors were caused by " + causes[service]
-    else:
-        verdict = "healthy"
-    level = node["max_severity"]
-    print(f"  {service:<9}  {level:<16}  {verdict}")
-print()
-print(f"  How Aegis knows: every error from the victim points back at an error from")
-print(f"  {ranked[0]}, so {ranked[0]} sits at the start of the chain of causes.")
-'
+incidents = json.loads(os.environ["INCIDENTS"])
+predictions = json.loads(os.environ["PREDICTIONS"])
 
-# Shows the ML model's early-warning score for the failing service. The model
-# only advises; it does not decide the root cause.
-curl -s "$API/predictions" | python3 -c '
-import json, sys
-scores = json.load(sys.stdin)
-flagged = [p for p in scores if p["high_risk"]]
-if flagged:
-    top = max(flagged, key=lambda p: p["risk"])
-    service, risk = top["service"], top["risk"]
+# What we injected, in order: (story, the service we broke).
+OUTAGES = [
+    ("The cache runs out of connections", "cache"),
+    ("The queue's background workers crash", "queue"),
+    ("The database deadlocks", "database"),
+]
+
+# Each outage breaks a different service, so the root cause identifies it.
+incident_for = {item["ranked_root_causes"][0]: item for item in incidents}
+
+correct = 0
+for number, (story, broken) in enumerate(OUTAGES, start=1):
+    incident = incident_for.get(broken)
+    print(f"  OUTAGE {number} of 3: {story}")
+    if incident is None:
+        print("    Aegis found no root cause for this outage.\n")
+        continue
+
+    nodes, ranked = incident["nodes"], incident["ranked_root_causes"]
+    caused_by = {effect: cause for cause, effect in incident["edges"]}
+
+    print("    Service    Worst log level   Verdict")
+    print("    ---------  ----------------  -----------------------------------------")
+    # Root cause first, then victims, then healthy services.
+    for service in ranked + [name for name in nodes if name not in ranked]:
+        level = nodes[service]["max_severity"]
+        if service == ranked[0]:
+            verdict = "ROOT CAUSE: nothing caused this failure"
+        elif service in caused_by:
+            verdict = "victim: its errors were caused by " + caused_by[service]
+        else:
+            verdict = "healthy"
+        print(f"    {service:<9}  {level:<16}  {verdict}")
+
+    blamed = ranked[0]
+    right = blamed == broken
+    correct += right
+    print(f"    Aegis blamed {blamed}. We broke {broken}. {'Correct.' if right else 'WRONG.'}")
+
+    flagged = [p["risk"] for p in predictions if p["service"] == broken and p["high_risk"]]
+    if flagged:
+        print(f"    Early warning: the ML model flagged {broken} as high risk at its first")
+        print(f"    WARNING, before the failure (score {max(flagged):.2f} of 1.0). It only advises.")
     print()
-    print(f"  Early warning: before the failure, the ML model flagged {service} as")
-    print(f"  high risk (score {risk:.2f} out of 1.0). It only advises; the graph decides.")
-'
+
+print(f"  {correct} of 3 outages traced to the right service.")
+print("  How: each victim's errors point back at an error from the service that broke,")
+print("  so the service with nothing pointing at it is the root cause.")
+PY
 
 echo ""
 echo "Opening the dashboards in your browser:"

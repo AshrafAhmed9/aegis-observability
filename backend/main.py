@@ -35,7 +35,7 @@ detector = ml.FailureDetector.load(ARTIFACTS_DIR / "model.joblib", ARTIFACTS_DIR
 # Results are kept in memory only (lost on restart), newest first.
 incidents = []     # root-cause results
 predictions = []   # ML risk scores
-MAX_KEPT = 20      # each list keeps only this many
+MAX_KEPT = 100     # each list keeps only this many
 
 # Every simulated episode starts its clock near 0. But this server runs one
 # Correlator for its whole life, and its watermark only moves forward. A
