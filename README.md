@@ -180,7 +180,8 @@ curl http://127.0.0.1:8010/incidents      # a few seconds later
 ```
 
 Once the virtualenv is set up and `train.py` has run, **`./demo.sh`** does all of the above in
-one command: Kafka, Prometheus, Grafana, the API, and an injected fault.
+one command. It starts everything, simulates an outage, prints which service Aegis blamed and
+why, and opens the Grafana dashboard and API docs in your browser.
 
 ### Dashboards
 
